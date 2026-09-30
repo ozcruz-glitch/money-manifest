@@ -455,13 +455,15 @@
 (function(){
 
 /* ============================= SUPABASE CONFIG =============================
-   Fill these in after creating your Supabase project (Settings → API).
+   Fill these in after creating your Supabase project.
+   Settings → API Keys → "Publishable and secret API keys" tab.
+   Use the Publishable key here — never the Secret key, which must stay server-side.
    ============================================================================ */
-const SUPABASE_URL = 'https://hqotplhflmzsctdxcosl.supabase.co/rest/v1/';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhxb3RwbGhmbG16c2N0ZHhjb3NsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTAwODE3NjgsImV4cCI6MjEwNTY1Nzc2OH0.LczMj2cfU-X_-vyXuNqZ-LVx2V-JwBIcSl1PlJLJoQE';
+const SUPABASE_URL = 'https://hqotplhflmzsctdxcosl.supabase.co/auth/v1/callback';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qj4p5QN5iNnvLKH-VvmKKg_wdOf7jvI';
 
 const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { flowType: 'pkce' } })
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'pkce' } })
   : null;
 
 let session = null;
@@ -486,7 +488,7 @@ function renderConfigMissing(){
     <div class="mark">Money Manifest</div>
     <div class="sub">Set up needed</div>
     <div class="gate-error">This copy of the app hasn't been connected to a Supabase project yet.
-    Add your SUPABASE_URL and SUPABASE_ANON_KEY near the top of the script, then reload.</div>
+    Add your SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY near the top of the script, then reload.</div>
   `);
 }
 
