@@ -516,7 +516,7 @@ function renderLogin(errorMsg){
 async function signIn(provider){
   await sb.auth.signInWithOAuth({
     provider,
-    options: { redirectTo: getRedirectUrl() }
+    options: { redirectTo: 'https://ozcruz-glitch.github.io/money-manifest/' }
   });
 }
 
