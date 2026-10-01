@@ -463,7 +463,15 @@ const SUPABASE_URL = 'https://hqotplhflmzsctdxcosl.supabase.co/auth/v1/callback'
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qj4p5QN5iNnvLKH-VvmKKg_wdOf7jvI';
 
 const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'pkce' } })
+  // Implicit flow for the web app: PKCE was tried twice (including a single clean
+  // attempt with no retries/extra tabs, which rules out the "overlapping flow" cause
+  // documented by Supabase) and still failed with "OAuth state parameter missing"
+  // both times. Implicit flow has none of that round-trip and works reliably here.
+  // NOTE: the native iOS build's deep-link handler (exchangeCodeForSession, below)
+  // needs PKCE specifically — that's a separate problem to revisit once the Capacitor
+  // wrap exists, since a real device's redirect handling is a different code path and
+  // may not hit the same issue at all.
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'implicit' } })
   : null;
 
 let session = null;
