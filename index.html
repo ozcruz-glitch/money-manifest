@@ -463,15 +463,8 @@ const SUPABASE_URL = 'https://hqotplhflmzsctdxcosl.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qj4p5QN5iNnvLKH-VvmKKg_wdOf7jvI';
 
 const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
-  // Implicit flow for the web app: PKCE was tried twice (including a single clean
-  // attempt with no retries/extra tabs, which rules out the "overlapping flow" cause
-  // documented by Supabase) and still failed with "OAuth state parameter missing"
-  // both times. Implicit flow has none of that round-trip and works reliably here.
-  // NOTE: the native iOS build's deep-link handler (exchangeCodeForSession, below)
-  // needs PKCE specifically — that's a separate problem to revisit once the Capacitor
-  // wrap exists, since a real device's redirect handling is a different code path and
-  // may not hit the same issue at all.
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'implicit' } })
+
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'pkce' } })
   : null;
 
 let session = null;
@@ -514,10 +507,14 @@ function renderLogin(errorMsg){
 }
 
 async function signIn(provider){
-  await sb.auth.signInWithOAuth({
+  const { error } = await sb.auth.signInWithOAuth({
     provider,
     options: { redirectTo: getRedirectUrl() }
   });
+  if(error){
+    console.error('signInWithOAuth failed', error);
+    renderLogin('Could not start sign-in: ' + error.message);
+  }
 }
 
 function getRedirectUrl(){
@@ -564,20 +561,47 @@ function renderOnboarding(){
 function randomInviteCode(){
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let out = '';
-  for(let i=0;i<6;i++) out += chars[Math.floor(Math.random()*chars.length)];
+  if(window.crypto && crypto.getRandomValues){
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    for(let i=0;i<6;i++) out += chars[bytes[i] % chars.length];
+  } else {
+    // Fallback only if the crypto API is unavailable in this browser context.
+    for(let i=0;i<6;i++) out += chars[Math.floor(Math.random()*chars.length)];
+  }
   return out;
 }
 
 async function createHousehold(){
-  const code = randomInviteCode();
-  const { data, error } = await sb.from('households').insert({ invite_code: code }).select().single();
+  // invite_code has a unique constraint in the database; a collision on a 6-character
+  // code is very unlikely but not impossible, so retry with a fresh code a few times
+  // rather than failing outright.
+  let data, error;
+  for(let attempt=0; attempt<5; attempt++){
+    ({ data, error } = await sb.from('households').insert({ invite_code: randomInviteCode() }).select().single());
+    if(!error || !/duplicate|unique/i.test(error.message||'')) break;
+  }
   if(error){ showOnboardError(error.message); return; }
-  await sb.from('household_members').insert({ household_id: data.id, user_id: session.user.id });
+
+  const { error: memberError } = await sb.from('household_members').insert({ household_id: data.id, user_id: session.user.id });
+  if(memberError){
+    // Without this row, findHousehold() can never locate this household again for this
+    // user — roll back the orphaned household row rather than leaving a dead end.
+    await sb.from('households').delete().eq('id', data.id);
+    showOnboardError('Could not finish setting up your household: ' + memberError.message + '. Please try again.');
+    return;
+  }
+
   household = data;
-  await sb.from('ledger_settings').insert({
+  const { error: settingsError } = await sb.from('ledger_settings').insert({
     household_id: household.id,
     users: [], categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)), category_colors: {}, person_colors: {}
   });
+  if(settingsError){
+    // Less severe than a missing membership row — the app falls back to sensible
+    // defaults (see loadLedgerFromServer) — but still worth surfacing, not hiding.
+    console.error('Could not create initial ledger settings', settingsError);
+  }
   await boot();
 }
 
@@ -609,13 +633,21 @@ async function findHousehold(){
 }
 
 async function loadLedgerFromServer(){
-  const [{ data: settingsRow }, { data: exp }, { data: earn }, { data: buckets }, { data: actualRows }] = await Promise.all([
+  const results = await Promise.all([
     sb.from('ledger_settings').select('*').eq('household_id', household.id).maybeSingle(),
     sb.from('expenses').select('*').eq('household_id', household.id),
     sb.from('earners').select('*').eq('household_id', household.id),
     sb.from('savings_buckets').select('*').eq('household_id', household.id),
     sb.from('actuals').select('*').eq('household_id', household.id)
   ]);
+  const tables = ['ledger_settings','expenses','earners','savings_buckets','actuals'];
+  const failed = results.map((r,i)=> r.error ? tables[i] : null).filter(Boolean);
+  if(failed.length){
+    // Don't let a failed read silently wipe the in-memory ledger with empty defaults —
+    // surface it and leave whatever was already loaded (or the login screen) in place.
+    throw new Error(`Could not load ${failed.join(', ')} (${results.find(r=>r.error).error.message})`);
+  }
+  const [{ data: settingsRow }, { data: exp }, { data: earn }, { data: buckets }, { data: actualRows }] = results;
 
   state.users = (settingsRow && settingsRow.users) || [];
   state.categories = (settingsRow && settingsRow.categories && settingsRow.categories.length) ? settingsRow.categories : JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
@@ -639,6 +671,13 @@ function subscribeRealtime(){
   const onChange = ()=>{
     clearTimeout(debounce);
     debounce = setTimeout(async ()=>{
+      if(hasPendingLocalChanges()){
+        // An edit here is still mid-debounce or mid-save — reloading now would
+        // overwrite it with the server's (older) state. Try again shortly instead
+        // of dropping this update entirely.
+        onChange();
+        return;
+      }
       await loadLedgerFromServer();
       render();
     }, 500);
@@ -649,20 +688,46 @@ function subscribeRealtime(){
     .on('postgres_changes', { event:'*', schema:'public', table:'savings_buckets', filter:`household_id=eq.${household.id}` }, onChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'actuals', filter:`household_id=eq.${household.id}` }, onChange)
     .on('postgres_changes', { event:'*', schema:'public', table:'ledger_settings', filter:`household_id=eq.${household.id}` }, onChange)
-    .subscribe();
+    .subscribe((status, err)=>{
+      const note = document.getElementById('saveNote');
+      if(status === 'CHANNEL_ERROR' || status === 'TIMED_OUT'){
+        console.error('Realtime subscription problem:', status, err);
+        // Live sync with your partner's device has stopped — saving your own
+        // changes still works, you just won't see theirs appear automatically
+        // until this reconnects or the page is reloaded.
+        if(note) note.textContent = 'Live sync interrupted — reload to reconnect';
+      } else if(status === 'CLOSED'){
+        console.warn('Realtime channel closed');
+      }
+    });
 }
 
 async function syncDeleteRow(table, id){
-  try{ await sb.from(table).delete().eq('id', id); }
-  catch(e){ console.error('delete failed', table, id, e); }
+  try{
+    const { error } = await sb.from(table).delete().eq('id', id);
+    if(error){
+      console.error('delete failed', table, id, error);
+      const note = document.getElementById('saveNote');
+      if(note) note.textContent = 'Sync failed — check connection';
+    }
+  }catch(e){
+    console.error('delete failed', table, id, e);
+    const note = document.getElementById('saveNote');
+    if(note) note.textContent = 'Sync failed — check connection';
+  }
 }
 
 let saveTimer = null;
+let syncInFlight = false;
+function hasPendingLocalChanges(){ return saveTimer !== null || syncInFlight; }
+
 function saveState(){
   const note = document.getElementById('saveNote');
   if(note) note.textContent = 'Syncing…';
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async ()=>{
+    saveTimer = null;
+    syncInFlight = true;
     try{
       const expRows = state.expenses.map(e=> ({ id:e.id, household_id:household.id, category:e.category, item:e.item, person:e.person, frequency:e.frequency, amount:e.amount }));
       const earnRows = state.income.earners.map(p=> ({ id:p.id, household_id:household.id, name:p.name, monthly:p.monthly }));
@@ -686,11 +751,19 @@ function saveState(){
       if(bucketRows.length) calls.push(sb.from('savings_buckets').upsert(bucketRows));
       if(actualRows.length) calls.push(sb.from('actuals').upsert(actualRows));
 
-      await Promise.all(calls);
-      if(note){ note.textContent = 'Synced'; }
+      const results = await Promise.all(calls);
+      const failed = results.find(r=> r && r.error);
+      if(failed){
+        console.error('sync failed', failed.error);
+        if(note) note.textContent = 'Sync failed — check connection';
+      } else if(note){
+        note.textContent = 'Synced';
+      }
     }catch(e){
       console.error(e);
       if(note) note.textContent = 'Sync failed — check connection';
+    } finally {
+      syncInFlight = false;
     }
   }, 350);
 }
@@ -815,7 +888,9 @@ function allCategories(){
 }
 
 let currentView = 'overview';
-const newId = (p)=> uuid();
+// IDs must be real UUIDs (the database columns require it), so there's no meaningful
+// prefix to apply here — this just wraps uuid() for a consistent call style everywhere.
+const newId = ()=> uuid();
 
 /* ============================= CALCULATIONS ============================= */
 
@@ -912,7 +987,7 @@ function renderOverview(root){
   cats.forEach(c=>{
     const li = document.createElement('li');
     li.innerHTML = `<span class="swatch" style="background:${colorFor(c)}"></span>
-      <span class="name">${titleCase(c)}</span>
+      <span class="name">${escapeHtml(titleCase(c))}</span>
       <span class="amt">${fmt(totals[c])}</span>
       <span class="pct">${pct(totals[c]/grand)}</span>`;
     legend.appendChild(li);
@@ -922,7 +997,7 @@ function renderOverview(root){
   const top = [...state.expenses].sort((a,b)=> monthlyOf(b)-monthlyOf(a)).slice(0,8);
   const tbl = document.getElementById('topItems');
   tbl.innerHTML = top.map(e=> `<tr>
-      <td><span class="tag" style="background:${colorFor(e.category)}">${titleCase(e.category)}</span></td>
+      <td><span class="tag" style="background:${colorFor(e.category)}">${escapeHtml(titleCase(e.category))}</span></td>
       <td>${escapeHtml(e.item||'Untitled')}</td>
       <td class="amt">${fmt(monthlyOf(e))}</td>
     </tr>`).join('') || '<tr><td class="empty">Nothing to show yet.</td></tr>';
@@ -1135,7 +1210,7 @@ function renderExpenses(root){
   });
   groupsEl.querySelectorAll('[data-addto]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      state.expenses.push({ id:newId('e'), category:btn.dataset.addto, item:'New item', person:'All', frequency:'MONTHLY', amount:0 });
+      state.expenses.push({ id:newId(), category:btn.dataset.addto, item:'New item', person:'All', frequency:'MONTHLY', amount:0 });
       saveState(); render();
     });
   });
@@ -1289,7 +1364,7 @@ function addPastedActualRows(text){
     const amt = parseFloat(String(amount||'').replace(/[^0-9.\-]/g,'')) || 0;
     if(!item) return;
     if(!state.categories.includes(category)) state.categories.push(category);
-    state.actuals.push({ id:newId('a'), category, item, amount:amt });
+    state.actuals.push({ id:newId(), category, item, amount:amt });
     added++;
   });
   if(added===0){ actualIoStatus('Could not find any usable rows in that paste.', true); return; }
@@ -1361,7 +1436,7 @@ function renderActualEntries(){
     const catCell = (a.id === actualEditingNewCatId)
       ? `<input type="text" data-id="${a.id}" data-field="__newcat" placeholder="New category name" autofocus>`
       : `<select data-id="${a.id}" data-field="category">
-          ${cats.map(c=> `<option value="${c}" ${((a.category||'').toUpperCase()===c)?'selected':''}>${titleCase(c)}</option>`).join('')}
+          ${cats.map(c=> `<option value="${escapeHtml(c)}" ${((a.category||'').toUpperCase()===c)?'selected':''}>${escapeHtml(titleCase(c))}</option>`).join('')}
           <option value="__new__">+ New category…</option>
         </select>`;
     tr.innerHTML = `
@@ -1386,7 +1461,7 @@ function renderActualEntries(){
 
   addRow.addEventListener('click', ()=>{
     const cat = allActualCategories()[0] || 'UNSORTED';
-    const entry = { id:newId('a'), category:cat, item:'', amount:0 };
+    const entry = { id:newId(), category:cat, item:'', amount:0 };
     state.actuals.push(entry);
     saveState(); render();
     setTimeout(()=>{
@@ -1546,6 +1621,19 @@ function parseBankWorkbook(wb){
     return vals.size <= 1;
   }
 
+  // If a named "Amount" column (no separate Debit/Credit) never contains a negative
+  // value across the whole file, it can't be using the "negative = spend" convention —
+  // some banks list spend as plain positive numbers in a generic Amount column. Without
+  // this, every row would be silently skipped and the import would report zero rows
+  // with no indication why.
+  let amountColumnIsPositiveOnly = false;
+  if(header && debitIdx<0 && amountIdx>=0){
+    amountColumnIsPositiveOnly = dataRows.every(row=>{
+      const v = bankNumOf(row[amountIdx]);
+      return isNaN(v) || v >= 0;
+    });
+  }
+
   const entries = [];
   dataRows.forEach((row,i)=>{
     let amt = 0;
@@ -1553,7 +1641,10 @@ function parseBankWorkbook(wb){
       amt = Math.abs(bankNumOf(row[debitIdx])||0);
     } else if(amountIdx!==null && amountIdx>=0){
       const v = bankNumOf(row[amountIdx]);
-      if(!isNaN(v) && v<0) amt = Math.abs(v);
+      if(!isNaN(v)){
+        if(v<0) amt = Math.abs(v);
+        else if(amountColumnIsPositiveOnly) amt = v;
+      }
     }
     if(amt<=0) return; // credits/deposits aren't spending — skip them
 
@@ -1593,7 +1684,7 @@ function importBankStatement(file){
       return;
     }
     if(!state.categories.includes('UNSORTED')) state.categories.push('UNSORTED');
-    entries.forEach(en=> state.actuals.push({ id:newId('a'), category:'UNSORTED', item:en.desc, amount:en.amount }));
+    entries.forEach(en=> state.actuals.push({ id:newId(), category:'UNSORTED', item:en.desc, amount:en.amount }));
     saveState(); render();
     actualIoStatus(`Imported ${entries.length} transaction(s) as Unsorted — assign categories in the table below.`, false);
   };
@@ -1664,7 +1755,7 @@ function renderIncome(root){
   });
 
   document.getElementById('addEarner').addEventListener('click', ()=>{
-    state.income.earners.push({ id:newId('p'), name:'New earner', monthly:0 });
+    state.income.earners.push({ id:newId(), name:'New earner', monthly:0 });
     saveState(); render();
   });
 
@@ -1741,7 +1832,7 @@ function renderSavings(root){
     });
   });
   document.getElementById('addBucket').addEventListener('click', ()=>{
-    state.savings.buckets.push({ id:newId('s'), name:'New goal', target:1000, start:0, monthly:50 });
+    state.savings.buckets.push({ id:newId(), name:'New goal', target:1000, start:0, monthly:50 });
     saveState(); render();
   });
 }
@@ -2170,6 +2261,12 @@ function sheetRows(wb, name){
   if(!sheet) return [];
   return XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' }).slice(1);
 }
+function sheetHasIdColumn(wb, name){
+  const sheet = wb.Sheets[name];
+  if(!sheet) return false;
+  const header = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' })[0] || [];
+  return String(header[0]||'').trim().toLowerCase() === 'id';
+}
 
 function importWorkbook(file){
   if(typeof XLSX === 'undefined'){
@@ -2189,8 +2286,11 @@ function importWorkbook(file){
 
     let added = 0, updated = 0;
 
+    const expHasId = sheetHasIdColumn(wb, 'Expenses');
     sheetRows(wb, 'Expenses').forEach(row=>{
-      const [catRaw, itemRaw, whoRaw, freqRaw, amountRaw] = row;
+      let idRaw, catRaw, itemRaw, whoRaw, freqRaw, amountRaw;
+      if(expHasId){ [idRaw, catRaw, itemRaw, whoRaw, freqRaw, amountRaw] = row; }
+      else { [catRaw, itemRaw, whoRaw, freqRaw, amountRaw] = row; }
       if(isExampleRow(itemRaw) || (!catRaw && !itemRaw)) return;
       if(!itemRaw) return;
       const category = String(catRaw||'Unsorted').trim().toUpperCase();
@@ -2202,55 +2302,82 @@ function importWorkbook(file){
       if(!state.categories.includes(category)) state.categories.push(category);
       if(person.toLowerCase()!=='all' && !state.users.includes(person)) state.users.push(person);
 
-      const existing = state.expenses.find(e=>
+      // Prefer matching by the row's own ID (stable even if category/item text changed
+      // since export) over the old category+item composite match, which can't tell two
+      // genuinely different items with the same name/category apart.
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.expenses.find(e=> e.id===id) : null;
+      const existing = existingById || state.expenses.find(e=>
         (e.category||'').toUpperCase()===category && e.item.trim().toLowerCase()===item.toLowerCase());
       if(existing){
+        if(existingById){ existing.category = category; existing.item = item; }
         existing.person = person; existing.frequency = frequency; existing.amount = amount;
         updated++;
       } else {
-        state.expenses.push({ id:newId('e'), category, item, person, frequency, amount });
+        state.expenses.push({ id: id || newId(), category, item, person, frequency, amount });
         added++;
       }
     });
 
+    const incHasId = sheetHasIdColumn(wb, 'Income');
     sheetRows(wb, 'Income').forEach(row=>{
-      const [nameRaw, freqRaw, amountRaw] = row;
+      let idRaw, nameRaw, freqRaw, amountRaw;
+      if(incHasId){ [idRaw, nameRaw, freqRaw, amountRaw] = row; }
+      else { [nameRaw, freqRaw, amountRaw] = row; }
       if(isExampleRow(nameRaw) || !nameRaw) return;
       const name = String(nameRaw).trim();
       const freqU = String(freqRaw||'Monthly').trim().toUpperCase().startsWith('FORT') ? 'FORTNIGHTLY' : 'MONTHLY';
       const amount = parseFloat(amountRaw) || 0;
       const monthly = freqU==='FORTNIGHTLY' ? amount*26/12 : amount;
 
-      const existing = state.income.earners.find(p=> p.name.trim().toLowerCase()===name.toLowerCase());
-      if(existing){ existing.monthly = monthly; updated++; }
-      else { state.income.earners.push({ id:newId('p'), name, monthly }); added++; }
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.income.earners.find(p=> p.id===id) : null;
+      const existing = existingById || state.income.earners.find(p=> p.name.trim().toLowerCase()===name.toLowerCase());
+      if(existing){
+        if(existingById) existing.name = name;
+        existing.monthly = monthly; updated++;
+      } else { state.income.earners.push({ id: id || newId(), name, monthly }); added++; }
     });
 
+    const savHasId = sheetHasIdColumn(wb, 'Savings');
     sheetRows(wb, 'Savings').forEach(row=>{
-      const [nameRaw, targetRaw, startRaw, monthlyRaw] = row;
+      let idRaw, nameRaw, targetRaw, startRaw, monthlyRaw;
+      if(savHasId){ [idRaw, nameRaw, targetRaw, startRaw, monthlyRaw] = row; }
+      else { [nameRaw, targetRaw, startRaw, monthlyRaw] = row; }
       if(isExampleRow(nameRaw) || !nameRaw) return;
       const name = String(nameRaw).trim();
       const target = parseFloat(targetRaw) || 0;
       const start = parseFloat(startRaw) || 0;
       const monthly = parseFloat(monthlyRaw) || 0;
 
-      const existing = state.savings.buckets.find(b=> b.name.trim().toLowerCase()===name.toLowerCase());
-      if(existing){ existing.target = target; existing.start = start; existing.monthly = monthly; updated++; }
-      else { state.savings.buckets.push({ id:newId('s'), name, target, start, monthly }); added++; }
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.savings.buckets.find(b=> b.id===id) : null;
+      const existing = existingById || state.savings.buckets.find(b=> b.name.trim().toLowerCase()===name.toLowerCase());
+      if(existing){
+        if(existingById) existing.name = name;
+        existing.target = target; existing.start = start; existing.monthly = monthly; updated++;
+      } else { state.savings.buckets.push({ id: id || newId(), name, target, start, monthly }); added++; }
     });
 
+    const actHasId = sheetHasIdColumn(wb, 'Actuals');
     sheetRows(wb, 'Actuals').forEach(row=>{
-      const [catRaw, itemRaw, amountRaw] = row;
+      let idRaw, catRaw, itemRaw, amountRaw;
+      if(actHasId){ [idRaw, catRaw, itemRaw, amountRaw] = row; }
+      else { [catRaw, itemRaw, amountRaw] = row; }
       if(isExampleRow(itemRaw) || !itemRaw) return;
       const category = String(catRaw||'Unsorted').trim().toUpperCase();
       const item = String(itemRaw).trim();
       const amount = parseFloat(amountRaw) || 0;
       if(!state.categories.includes(category)) state.categories.push(category);
 
-      const existing = state.actuals.find(a=>
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.actuals.find(a=> a.id===id) : null;
+      const existing = existingById || state.actuals.find(a=>
         (a.category||'').toUpperCase()===category && a.item.trim().toLowerCase()===item.toLowerCase());
-      if(existing){ existing.amount = amount; updated++; }
-      else { state.actuals.push({ id:newId('a'), category, item, amount }); added++; }
+      if(existing){
+        if(existingById){ existing.category = category; existing.item = item; }
+        existing.amount = amount; updated++;
+      } else { state.actuals.push({ id: id || newId(), category, item, amount }); added++; }
     });
 
     saveState();
@@ -2276,7 +2403,7 @@ function scenarioCategoryTotals(scenario){
   return map;
 }
 function freshScenarioExpenses(source){
-  return JSON.parse(JSON.stringify(source)).map(e=> ({ ...e, id:newId('e') }));
+  return JSON.parse(JSON.stringify(source)).map(e=> ({ ...e, id:newId() }));
 }
 
 function renderScenarios(root){
@@ -2299,7 +2426,7 @@ function renderScenarios(root){
     btn.addEventListener('click', ()=>{ scenarioSelectedId = btn.dataset.sid; render(); });
   });
   document.getElementById('newScenarioBtn').addEventListener('click', ()=>{
-    const s = { id:newId('scn'), name:'Scenario '+(state.scenarios.length+1), expenses: freshScenarioExpenses(state.expenses) };
+    const s = { id:newId(), name:'Scenario '+(state.scenarios.length+1), expenses: freshScenarioExpenses(state.expenses) };
     state.scenarios.push(s);
     scenarioSelectedId = s.id;
     saveState(); render();
@@ -2348,7 +2475,7 @@ function renderScenarios(root){
     saveState(); render();
   });
   document.getElementById('duplicateScenarioBtn').addEventListener('click', ()=>{
-    const copy = { id:newId('scn'), name:scenario.name+' copy', expenses: freshScenarioExpenses(scenario.expenses) };
+    const copy = { id:newId(), name:scenario.name+' copy', expenses: freshScenarioExpenses(scenario.expenses) };
     state.scenarios.push(copy);
     scenarioSelectedId = copy.id;
     saveState(); render();
@@ -2425,7 +2552,7 @@ function renderScenarioGroups(scenario){
     group.innerHTML = `
       <div class="cat-group-head">
         <span class="swatch" style="background:${colorFor(cat)}"></span>
-        <span class="name">${titleCase(cat)}</span>
+        <span class="name">${escapeHtml(titleCase(cat))}</span>
         <span class="total">${fmt(totals[cat]||0)} / mo</span>
       </div>
       <table class="exp">
@@ -2484,7 +2611,7 @@ function renderScenarioGroups(scenario){
   });
   wrap.querySelectorAll('[data-scenaddto]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
-      scenario.expenses.push({ id:newId('e'), category:btn.dataset.scenaddto, item:'New item', person:'All', frequency:'MONTHLY', amount:0 });
+      scenario.expenses.push({ id:newId(), category:btn.dataset.scenaddto, item:'New item', person:'All', frequency:'MONTHLY', amount:0 });
       saveState(); render();
     });
   });
@@ -3103,8 +3230,10 @@ function renderSettings(root){
     const newName = e.target.value.trim() || 'Our household';
     state.budgetName = newName;
     household.name = newName;
-    try{ await sb.from('households').update({ name: newName }).eq('id', household.id); }
-    catch(err){ console.error('Could not update household name', err); }
+    try{
+      const { error } = await sb.from('households').update({ name: newName }).eq('id', household.id);
+      if(error){ console.error('Could not update household name', error); alert('Could not save the new name — check your connection and try again.'); }
+    }catch(err){ console.error('Could not update household name', err); alert('Could not save the new name — check your connection and try again.'); }
     const nameInput = document.getElementById('exportNameInput');
     if(nameInput) nameInput.value = defaultExportName();
   });
@@ -3125,10 +3254,16 @@ function renderSettings(root){
 
   document.getElementById('loadSampleBtn').addEventListener('click', loadSampleData);
   document.getElementById('copyInviteBtn').addEventListener('click', ()=>{
+    const btn = document.getElementById('copyInviteBtn');
     navigator.clipboard.writeText(household.invite_code).then(()=>{
-      const btn = document.getElementById('copyInviteBtn');
       btn.textContent = 'Copied!';
       setTimeout(()=>{ btn.textContent = 'Copy'; }, 1500);
+    }).catch(err=>{
+      // Clipboard access can fail silently (browser permissions, non-HTTPS context) —
+      // fall back to visibly showing the code so the user can select/copy it manually.
+      console.error('Clipboard write failed', err);
+      btn.textContent = 'Copy failed — code shown above';
+      setTimeout(()=>{ btn.textContent = 'Copy'; }, 2500);
     });
   });
 
