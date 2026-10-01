@@ -464,7 +464,7 @@ const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qj4p5QN5iNnvLKH-VvmKKg_wdOf7jvI
 
 const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
 
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'pkce',
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'implicit',
       persistSession: true,
       storage: window.localStorage } })
   : null;
