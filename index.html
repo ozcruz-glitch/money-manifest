@@ -3295,10 +3295,6 @@ async function handleNativeAuthRedirect(){
       renderLogin();
     }
   });
-
-  const { data } = await sb.auth.getSession();
-  session = data.session;
-  if(session) await boot(); else renderLogin();
 })();
 
 })();
