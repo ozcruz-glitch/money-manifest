@@ -592,6 +592,10 @@
 const SUPABASE_URL = 'https://hqotplhflmzsctdxcosl.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qj4p5QN5iNnvLKH-VvmKKg_wdOf7jvI';
 
+// The public website. Inside the iPhone app, pages such as the privacy policy are opened
+// from here, because the app's own internal addresses can't be opened by iOS.
+const PUBLIC_SITE_URL = 'https://ozcruz-glitch.github.io/money-manifest/';
+
 const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
   // PKCE flow — required for the native iOS build's deep-link handler below
   // (exchangeCodeForSession only works with PKCE's code-based handoff; using implicit
@@ -4046,7 +4050,7 @@ function renderSettings(root){
     <div class="block-head" style="margin-top:32px;"><h3>Account</h3><span class="hint">Signed in as ${escapeHtml(session.user.email||'')}</span></div>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px;">
       <button class="btn small ghost" id="settingsSignOutBtn">Sign out</button>
-      <a class="btn small ghost" href="privacy.html" target="_blank" rel="noopener" style="text-decoration:none;">Privacy policy</a>
+      <a class="btn small ghost" href="privacy.html" target="_blank" rel="noopener" data-public-page="privacy.html" style="text-decoration:none;">Privacy policy</a>
     </div>
     <div class="field" style="max-width:360px; margin-bottom:18px;">
       <label for="idleSelect">Sign out automatically after inactivity</label>
@@ -4248,6 +4252,24 @@ document.querySelectorAll('.tab').forEach(tab=>{
 });
 
 document.getElementById('signOutBtn').addEventListener('click', signOutEverywhere);
+
+// In the iPhone app, a link that opens a new window would pass the app's internal
+// capacitor:// address to iOS, which offers to open some other Capacitor-built app.
+// Route those links through the in-app browser sheet instead.
+document.addEventListener('click', (ev)=>{
+  if(!isNativeApp()) return;
+  const a = ev.target.closest && ev.target.closest('a[href]');
+  if(!a) return;
+  const page = a.getAttribute('data-public-page');
+  let url = null;
+  if(page) url = new URL(page, PUBLIC_SITE_URL).href;
+  else if(/^https?:/i.test(a.href) && (a.target === '_blank' || new URL(a.href).origin !== location.origin)) url = a.href;
+  else if(a.target === '_blank') url = new URL(a.getAttribute('href'), PUBLIC_SITE_URL).href;
+  if(!url) return;
+  ev.preventDefault();
+  const Browser = nativePlugin('Browser');
+  if(Browser) Browser.open({ url, presentationStyle:'popover' });
+}, true);
 // The phone menu-bar icon sits right next to the tabs, so confirm before signing out.
 document.getElementById('railSignOutBtn').addEventListener('click', ()=>{
   if(confirm('Sign out of Money Manifest?')) signOutEverywhere();
