@@ -388,9 +388,13 @@
   .split-warn{ color:var(--warn); font-weight:600; }
   .split-even{ background:none; border:none; padding:0; color:var(--brand-dark); text-decoration:underline; cursor:pointer; font-size:12px; }
 
+  .idle-warning{ position:fixed; left:50%; transform:translateX(-50%); bottom:calc(16px + env(safe-area-inset-bottom, 0px)); z-index:50;
+    display:flex; gap:14px; align-items:center; background:var(--ink); color:#fff; padding:12px 16px; border-radius:6px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.25); font-size:13px; max-width:calc(100vw - 32px); }
+
   /* ---------- Bank accounts / transfers ---------- */
   .acct-panel{ background:var(--paper-raised); border:1px solid var(--rule); border-radius:4px; padding:14px 16px; margin-bottom:24px; }
-  .acct-row{ display:grid; grid-template-columns: minmax(0,1.3fr) minmax(0,1.3fr) auto auto auto 34px; gap:10px; align-items:center; padding:7px 0; border-bottom:1px solid var(--rule); font-size:13px; }
+  .acct-row{ display:grid; grid-template-columns: minmax(0,1.3fr) minmax(0,1.3fr) auto auto 34px; gap:10px; align-items:center; padding:7px 0; border-bottom:1px solid var(--rule); font-size:13px; }
   .acct-row:last-of-type{ border-bottom:none; }
   .acct-row.head{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); font-weight:600; padding-top:0; }
   .acct-row input{ min-width:0; width:100%; padding:6px 8px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; font-size:13px; }
@@ -400,6 +404,18 @@
   .acct-row.head .prog{ font-size:inherit; color:inherit; }
   .acct-actions{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
   .acct-actions input{ padding:7px 9px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; min-width:0; }
+  .xfer-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(240px,1fr)); gap:12px; }
+  .xfer-card{ border:1px solid var(--rule); border-radius:4px; background:#fff; padding:10px 12px; }
+  .xfer-head{ display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+  .xfer-head .dot{ width:9px; height:9px; border-radius:50%; flex:none; }
+  .xfer-head select{ margin-left:auto; padding:4px 6px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; font-size:12.5px; }
+  .xfer-line{ display:flex; align-items:center; gap:8px; padding:5px 0; border-bottom:1px solid var(--rule); font-size:13px; cursor:pointer; }
+  .xfer-line input{ width:16px; height:16px; accent-color:var(--brand); flex:none; }
+  .xfer-line .xfer-acc{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .xfer-line .num{ font-variant-numeric:tabular-nums; }
+  .xfer-line.done .xfer-acc, .xfer-line.done .num{ opacity:0.5; text-decoration:line-through; }
+  .xfer-total{ display:flex; justify-content:space-between; padding-top:7px; font-size:13px; font-weight:700; }
+  .xfer-total .num{ font-variant-numeric:tabular-nums; }
   .exp-scroll{ overflow-x:auto; }
   .exp-scroll table.exp{ min-width:760px; }
   table.exp tr.done td:not(.done-cell){ opacity:0.5; }
@@ -408,7 +424,6 @@
   @media (max-width: 880px){
     .acct-row{ grid-template-columns: minmax(0,1fr) auto auto 34px; }
     .acct-row .details-col, .acct-row.head .details-col{ display:none; }
-    .acct-row .perpay-col{ display:none; }
   }
 
   /* ---------- Auth / onboarding ---------- */
@@ -556,6 +571,9 @@ function renderConfigMissing(){
 }
 
 function renderLogin(errorMsg){
+  if(!errorMsg){
+    try{ errorMsg = sessionStorage.getItem(SIGNOUT_REASON_KEY) || ''; sessionStorage.removeItem(SIGNOUT_REASON_KEY); }catch(e){}
+  }
   gate(`
     <div class="mark">Money Manifest</div>
     <div class="sub">Sign in to open your household's ledger</div>
@@ -573,6 +591,8 @@ function isNativeApp(){
 }
 
 async function signIn(provider){
+  markActive(true);
+  freshSignIn = true;
   if(isNativeApp()){
     // Inside the iOS app: Google refuses OAuth inside an embedded web view
     // (error "disallowed_useragent"), so don't let Supabase navigate the app's own
@@ -588,7 +608,7 @@ async function signIn(provider){
       renderLogin('Could not start sign-in: ' + (error ? error.message : 'no sign-in URL returned'));
       return;
     }
-    const Browser = window.Capacitor.Plugins.Browser;
+    const Browser = nativePlugin('Browser');
     if(!Browser){
       renderLogin('Sign-in needs the Capacitor Browser plugin — see the setup guide.');
       return;
@@ -1092,6 +1112,7 @@ window.addEventListener('pointerup', releasePointer, true);
 window.addEventListener('pointercancel', releasePointer, true);
 
 function render(){
+  if(isLocked()) return;   // locked: keep budget data off the screen until Face ID passes
   if(pointerIsDown){
     renderPending = true;
     // Safety net in case a pointerup never arrives (e.g. released outside the window).
@@ -1332,9 +1353,64 @@ function accountSummary(accountId){
   };
 }
 
+// ---- Transfers per person ----
+// Bills nominated to an account are paid by: the person named on the bill, or for
+// shared bills (Who = "All", or someone no longer in the household) everyone equally.
+// Each person transfers fortnightly or monthly (defaulting to how they're paid on the
+// Income tab); fortnightly = monthly share / 2, matching how pay is counted. These
+// preferences and the "Transferred" ticks live in the existing forecast JSON column,
+// so no database change is needed.
+function transferPrefs(){
+  const f = state.forecast || {};
+  return { freq: f.transferFreq || {}, done: f.transferDone || {} };
+}
+function setTransferPrefs(freq, done){
+  state.forecast = Object.assign({}, state.forecast, { transferFreq: freq, transferDone: done });
+}
+function personTransferFreq(person){
+  const saved = transferPrefs().freq[person];
+  if(saved === 'FORTNIGHTLY' || saved === 'MONTHLY') return saved;
+  const earner = state.income.earners.find(p=> (p.name||'').trim().toLowerCase() === person.trim().toLowerCase());
+  if(earner) return earnerFreq(earner);
+  return anyFortnightlyEarner() ? 'FORTNIGHTLY' : 'MONTHLY';
+}
+function expenseShares(e){
+  if(!state.users.length) return {};
+  if(state.users.includes(e.person)) return { [e.person]: 1 };
+  const each = 1 / state.users.length, out = {};
+  state.users.forEach(u=> out[u] = each);
+  return out;
+}
+// { person: { accountId: monthlyAmount } } for every account with bills nominated to it
+function transfersByPerson(){
+  const out = {};
+  state.users.forEach(u=> out[u] = {});
+  state.expenses.forEach(e=>{
+    if(!e.account || !state.accounts.some(a=> a.id===e.account)) return;
+    const shares = expenseShares(e);
+    Object.keys(shares).forEach(u=>{ out[u][e.account] = (out[u][e.account]||0) + monthlyOf(e)*shares[u]; });
+  });
+  return out;
+}
+const doneKey = (person, accId)=> person + '|' + accId;
+
+function accountOptions(selected){
+  const opts = [`<option value="" ${!selected?'selected':''}>—</option>`]
+    .concat(state.accounts.map(a=> `<option value="${escapeHtml(a.id)}" ${a.id===selected?'selected':''}>${escapeHtml(a.name)}</option>`));
+  return opts.join('');
+}
+
+function accountSummary(accountId){
+  const items = state.expenses.filter(e=> (e.account||'') === accountId);
+  return {
+    monthly: items.reduce((s,e)=> s + monthlyOf(e), 0),
+    count: items.length,
+    done: items.filter(e=> e.actioned).length
+  };
+}
+
 function renderAccountsPanel(){
   const wrap = document.getElementById('accountsPanel');
-  const fortnightly = anyFortnightlyEarner();
   const row = (a, s, isUnassigned)=>{
     const prog = s.count ? `${s.done} of ${s.count} done` : 'No bills';
     return `<div class="acct-row">
@@ -1343,26 +1419,67 @@ function renderAccountsPanel(){
         : `<input type="text" value="${escapeHtml(a.name)}" data-acc-id="${escapeHtml(a.id)}" data-acc-field="name" aria-label="Account name">
            <input class="details-col" type="text" value="${escapeHtml(a.details||'')}" data-acc-id="${escapeHtml(a.id)}" data-acc-field="details" placeholder="Details (optional)" aria-label="Account details">`}
       <span class="num">${fmt(s.monthly, 2)}<span style="color:var(--ink-soft); font-size:11px;"> /mo</span></span>
-      <span class="num perpay-col">${fortnightly ? fmt(s.monthly / 2, 2) + '<span style="color:var(--ink-soft); font-size:11px;"> /fortnight</span>' : ''}</span>
       <span class="prog ${s.count && s.done===s.count ? 'complete' : ''}">${prog}</span>
       ${isUnassigned ? '<span></span>' : `<button class="icon-btn" data-del-acc="${escapeHtml(a.id)}" title="Remove account">✕</button>`}
     </div>`;
   };
+
+  // Per-person transfer cards
+  let xferHtml = '';
+  if(state.accounts.length && state.users.length){
+    const byPerson = transfersByPerson();
+    const { done } = transferPrefs();
+    const anyAssigned = state.users.some(u=> Object.keys(byPerson[u]).length);
+    if(anyAssigned){
+      xferHtml = `
+        <div class="block-head" style="margin:18px 0 8px;"><h3 style="font-size:14px;">Transfers by person</h3>
+          <span class="hint">Shared bills are split evenly; personal bills go to that person</span></div>
+        <div class="xfer-grid">
+          ${state.users.map((u,i)=>{
+            const freq = personTransferFreq(u), div = freq==='FORTNIGHTLY' ? 2 : 1, per = freq==='FORTNIGHTLY' ? 'fortnight' : 'month';
+            const lines = state.accounts.filter(a=> (byPerson[u][a.id]||0) > 0.004);
+            const total = lines.reduce((s,a)=> s + byPerson[u][a.id]/div, 0);
+            return `<div class="xfer-card">
+              <div class="xfer-head">
+                <span class="dot" style="background:${colorForPerson(u,i)}"></span>
+                <strong>${escapeHtml(u)}</strong>
+                <select data-xfer-freq="${escapeHtml(u)}" aria-label="How often ${escapeHtml(u)} transfers">
+                  <option value="FORTNIGHTLY" ${freq==='FORTNIGHTLY'?'selected':''}>Fortnightly</option>
+                  <option value="MONTHLY" ${freq==='MONTHLY'?'selected':''}>Monthly</option>
+                </select>
+              </div>
+              ${lines.length ? lines.map(a=>{
+                const k = doneKey(u, a.id), isDone = !!done[k];
+                return `<label class="xfer-line ${isDone?'done':''}">
+                  <input type="checkbox" data-xfer-done="${escapeHtml(k)}" ${isDone?'checked':''} aria-label="${escapeHtml(u)} transferred to ${escapeHtml(a.name)}">
+                  <span class="xfer-acc">${escapeHtml(a.name)}</span>
+                  <span class="num">${fmt(byPerson[u][a.id]/div, 2)}</span>
+                </label>`;}).join('')
+                : `<div class="empty" style="padding:4px 0;">Nothing to transfer.</div>`}
+              ${lines.length ? `<div class="xfer-total"><span>Total per ${per}</span><span class="num">${fmt(total, 2)}</span></div>` : ''}
+            </div>`;
+          }).join('')}
+        </div>`;
+    }
+  }
+
   const unassigned = accountSummary('');
-  const anyDone = state.expenses.some(e=> e.actioned);
+  const anyDone = state.expenses.some(e=> e.actioned) || Object.values(transferPrefs().done).some(Boolean);
   wrap.innerHTML = `
     <div class="acct-panel">
       <div class="block-head" style="margin-bottom:8px;"><h3>Bank accounts &amp; transfers</h3>
         <span class="hint">Nominate an account for each bill, then tick bills off as they're paid or transferred</span></div>
       ${state.accounts.length ? `
-        <div class="acct-row head"><span>Account</span><span class="details-col">Details</span><span class="num">Monthly</span><span class="num perpay-col">${fortnightly?'Per fortnight':''}</span><span class="prog">Actioned</span><span></span></div>
+        <div class="acct-row head"><span>Account</span><span class="details-col">Details</span><span class="num">Monthly</span><span class="prog">Actioned</span><span></span></div>
         ${state.accounts.map(a=> row(a, accountSummary(a.id), false)).join('')}
         ${unassigned.count ? row(null, unassigned, true) : ''}`
       : `<div class="empty" style="padding:6px 0 0;">No accounts yet. Add one below, e.g. "Bills account" or "Mortgage offset".</div>`}
+      ${xferHtml}
+      ${state.accounts.length && !state.users.length ? `<p style="font-size:12px; color:var(--ink-soft); margin:12px 0 0;">Add people in Settings to see how much each person should transfer.</p>` : ''}
       <div class="acct-actions">
         <input type="text" id="newAccountInput" placeholder="New account name">
         <button class="btn small ghost" id="addAccountBtn">+ Add account</button>
-        ${anyDone ? `<button class="btn small ghost" id="untickAllBtn" style="margin-left:auto;" title="Clear every Done tick, e.g. at the start of a new pay cycle">Untick all</button>` : ''}
+        ${anyDone ? `<button class="btn small ghost" id="untickAllBtn" style="margin-left:auto;" title="Clear every Done and Transferred tick, e.g. at the start of a new pay cycle">Untick all</button>` : ''}
       </div>
     </div>`;
 
@@ -1376,6 +1493,22 @@ function renderAccountsPanel(){
       saveState(); render();
     });
   });
+  wrap.querySelectorAll('[data-xfer-freq]').forEach(sel=>{
+    sel.addEventListener('change', ()=>{
+      const { freq, done } = transferPrefs();
+      setTransferPrefs(Object.assign({}, freq, { [sel.dataset.xferFreq]: sel.value }), done);
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-xfer-done]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const { freq, done } = transferPrefs();
+      const next = Object.assign({}, done);
+      if(cb.checked) next[cb.dataset.xferDone] = true; else delete next[cb.dataset.xferDone];
+      setTransferPrefs(freq, next);
+      saveState(); render();
+    });
+  });
   wrap.querySelectorAll('[data-del-acc]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const id = btn.dataset.delAcc;
@@ -1384,6 +1517,9 @@ function renderAccountsPanel(){
       if(n && !confirm(`Remove "${acc ? acc.name : 'this account'}"? ${n} bill${n===1?'':'s'} nominated to it will become "not assigned".`)) return;
       state.accounts = state.accounts.filter(a=> a.id!==id);
       state.expenses.forEach(e=>{ if(e.account===id) e.account=''; });
+      const { freq, done } = transferPrefs();
+      const next = {}; Object.keys(done).forEach(k=>{ if(!k.endsWith('|'+id)) next[k] = done[k]; });
+      setTransferPrefs(freq, next);
       saveState(); render();
     });
   });
@@ -1398,8 +1534,9 @@ function renderAccountsPanel(){
   document.getElementById('newAccountInput').addEventListener('keydown', e=>{ if(e.key==='Enter') addAcc(); });
   const untick = document.getElementById('untickAllBtn');
   if(untick) untick.addEventListener('click', ()=>{
-    if(!confirm('Clear every Done tick? Use this at the start of a new month or pay cycle.')) return;
+    if(!confirm('Clear every Done and Transferred tick? Use this at the start of a new month or pay cycle.')) return;
     state.expenses.forEach(e=>{ e.actioned = false; });
+    setTransferPrefs(transferPrefs().freq, {});
     saveState(); render();
   });
 }
@@ -3759,6 +3896,14 @@ function renderSettings(root){
       <button class="btn small ghost" id="settingsSignOutBtn">Sign out</button>
       <a class="btn small ghost" href="privacy.html" target="_blank" rel="noopener" style="text-decoration:none;">Privacy policy</a>
     </div>
+    <div class="field" style="max-width:360px; margin-bottom:18px;">
+      <label for="idleSelect">Sign out automatically after inactivity</label>
+      <select id="idleSelect" style="width:100%; padding:8px 10px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff;">
+        ${Array.from({length:12},(_,i)=>(i+1)*5).map(m=> `<option value="${m}" ${m===idleMinutes()?'selected':''}>${m} minutes${m===15?' (default)':''}</option>`).join('')}
+      </select>
+      <p style="font-size:12px; color:var(--ink-soft); margin:6px 0 0;">Applies to this device only.${biometricEnabled() ? ' With Face ID unlock on, the app locks instead of signing you out.' : ''}</p>
+    </div>
+    <div id="bioSetting" style="max-width:420px; margin-bottom:18px;"></div>
     <div class="danger-zone">
       <h4>Delete account</h4>
       <p>Permanently deletes your sign-in and removes you from this household. If you're the only member, the household and all of its budget data are deleted too. If someone else is still a member, the household stays for them. This can't be undone.</p>
@@ -3776,6 +3921,11 @@ function renderSettings(root){
   `;
 
   document.getElementById('settingsSignOutBtn').addEventListener('click', signOutEverywhere);
+  renderBioSetting();
+  document.getElementById('idleSelect').addEventListener('change', (e)=>{
+    try{ localStorage.setItem(IDLE_KEY, e.target.value); }catch(err){}
+    markActive(true);
+  });
   document.getElementById('deleteAccountBtn').addEventListener('click', ()=>{
     document.getElementById('deleteStep1').style.display='none';
     document.getElementById('deleteStep2').style.display='';
@@ -3957,6 +4107,45 @@ function loadSampleData(){
   saveState(); render();
 }
 
+async function renderBioSetting(){
+  const wrap = document.getElementById('bioSetting');
+  if(!wrap) return;
+  if(!isNativeApp()){
+    wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:0;">Face ID unlock is available in the iPhone app.</p>`;
+    return;
+  }
+  const info = await biometricInfo();
+  if(!document.getElementById('bioSetting')) return;   // Settings closed while checking
+  if(!info.available){
+    wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:0;">Set up Face ID or a passcode in your phone's Settings to unlock Money Manifest with it.</p>`;
+    return;
+  }
+  const label = biometryLabel(info.type), on = biometricEnabled();
+  wrap.innerHTML = `
+    <label class="export-check" style="font-size:13.5px; font-weight:600;">
+      <input type="checkbox" id="bioToggle" ${on?'checked':''}> Unlock with ${escapeHtml(label)}
+    </label>
+    <p style="font-size:12px; color:var(--ink-soft); margin:4px 0 0 23px;">Asks for ${escapeHtml(label)} when you open the app, and locks the app after inactivity instead of signing you out.</p>
+    <div class="io-status" id="bioStatus"></div>`;
+  document.getElementById('bioToggle').addEventListener('change', async (e)=>{
+    const status = document.getElementById('bioStatus');
+    if(e.target.checked){
+      // Make sure it actually works on this phone before relying on it.
+      const r = await verifyBiometric('Turn on ' + label + ' for Money Manifest');
+      if(!r.ok){
+        e.target.checked = false;
+        if(!r.cancelled){ status.textContent = label + ' didn\'t work, so it hasn\'t been turned on.'; status.className = 'io-status show err'; }
+        return;
+      }
+      try{ localStorage.setItem(BIO_KEY, '1'); }catch(err){}
+      appUnlocked = true;
+    } else {
+      try{ localStorage.removeItem(BIO_KEY); }catch(err){}
+    }
+    render();
+  });
+}
+
 async function signOutEverywhere(){
   if(realtimeChannel) sb.removeChannel(realtimeChannel);
   await sb.auth.signOut();
@@ -3981,12 +4170,181 @@ async function deleteMyAccount(){
     return;
   }
   if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  try{ localStorage.removeItem(BIO_KEY); }catch(e){}
   try{ await sb.auth.signOut(); }catch(e){ /* the session's user no longer exists */ }
   household = null;
   window.location.reload();
 }
 
+// ============================ Face ID / fingerprint unlock (iPhone app only) ============================
+// Uses @capgo/capacitor-native-biometric. You sign in once with Apple/Google; after that,
+// opening the app (and returning after the inactivity timeout) asks for Face ID instead
+// of a full sign-in. Off by default, per device. Not offered on the website, where a
+// browser-side check would be easy to bypass.
+const BIO_KEY = 'mm-biometric';
+let appUnlocked = false;   // has Face ID been passed since the app was opened / last locked?
+let freshSignIn = false;   // just signed in with Apple/Google, so don't ask for Face ID too
+let ledgerLoaded = false;  // is the household's data already loaded in this session?
+
+function nativePlugin(name){
+  const C = window.Capacitor;
+  if(!C) return null;
+  if(C.Plugins && C.Plugins[name]) return C.Plugins[name];
+  try{ return C.registerPlugin ? C.registerPlugin(name) : null; }catch(e){ return null; }
+}
+function biometricPlugin(){ return isNativeApp() ? nativePlugin('NativeBiometric') : null; }
+function biometricEnabled(){
+  try{ return !!biometricPlugin() && localStorage.getItem(BIO_KEY) === '1'; }catch(e){ return false; }
+}
+function isLocked(){ return biometricEnabled() && !appUnlocked; }
+async function biometricInfo(){
+  const p = biometricPlugin();
+  if(!p) return { available:false };
+  try{
+    const r = await p.isAvailable({ useFallback:true });
+    return { available: !!r.isAvailable, type: r.biometryType };
+  }catch(e){ return { available:false }; }
+}
+function biometryLabel(type){
+  // Plugin's BiometryType: 1 Touch ID, 2 Face ID, 3 fingerprint, 7 device passcode
+  return type===2 ? 'Face ID' : type===1 ? 'Touch ID' : type===3 ? 'fingerprint' : type===7 ? 'your passcode' : 'Face ID';
+}
+async function verifyBiometric(reason){
+  const p = biometricPlugin();
+  if(!p) return { ok:false, cancelled:false };
+  try{
+    // useFallback: if Face ID fails, iOS offers the phone's passcode instead.
+    await p.verifyIdentity({ reason, title:'Money Manifest', useFallback:true });
+    return { ok:true };
+  }catch(e){
+    const code = String((e && (e.code ?? e.errorCode)) ?? '');
+    // 16 user cancel, 11 app cancel, 15 system cancel: just leave the lock screen up
+    return { ok:false, cancelled: ['11','15','16'].includes(code), code };
+  }
+}
+
+function renderLockScreen(message){
+  document.getElementById('appRoot').style.display = 'none';
+  document.getElementById('views').innerHTML = '';   // nothing left visible behind the lock
+  hideIdleWarning();
+  gate(`
+    <div class="mark">Money Manifest</div>
+    <div class="sub">Locked</div>
+    ${message ? `<div class="gate-error">${escapeHtml(message)}</div>` : ''}
+    <button class="oauth-btn apple" id="btnUnlock">Unlock</button>
+    <button class="oauth-btn" id="btnLockSignOut">Sign out instead</button>
+  `);
+  biometricInfo().then(info=>{ const b = document.getElementById('btnUnlock'); if(b) b.textContent = 'Unlock with ' + biometryLabel(info.type); });
+  document.getElementById('btnUnlock').addEventListener('click', ()=> attemptUnlock());
+  document.getElementById('btnLockSignOut').addEventListener('click', signOutEverywhere);
+}
+
+let unlockInProgress = false;
+async function attemptUnlock(){
+  if(unlockInProgress) return;
+  unlockInProgress = true;
+  const info = await biometricInfo();
+  if(!info.available){
+    // Face ID was turned off or removed on the phone since this was enabled.
+    unlockInProgress = false;
+    renderLockScreen('Face ID isn\'t available on this phone any more. Sign out and sign in again to continue.');
+    return;
+  }
+  const r = await verifyBiometric('Unlock Money Manifest');
+  unlockInProgress = false;
+  if(!r.ok){
+    renderLockScreen(r.cancelled ? '' : 'That didn\'t work. Try again, or sign out and sign in with Apple or Google.');
+    return;
+  }
+  appUnlocked = true;
+  markActive(true);
+  if(ledgerLoaded){
+    // Locked mid-session: the data is still loaded, so just show it again.
+    document.getElementById('gateRoot').innerHTML = '';
+    document.getElementById('appRoot').style.display = '';
+    render();
+  } else {
+    boot();
+  }
+}
+
+function lockApp(){
+  appUnlocked = false;
+  renderLockScreen('');
+  attemptUnlock();
+}
+
+// ============================ Auto sign-out after inactivity ============================
+// Per device (localStorage): each person chooses their own timeout, 5-60 minutes in
+// 5-minute steps, default 15. "Last active" is stored too, so closing the app and
+// reopening it hours later also signs you out, and phones (which pause timers in the
+// background) are checked the moment the app comes back to the foreground.
+const IDLE_KEY = 'mm-idle-minutes', ACTIVE_KEY = 'mm-last-active', SIGNOUT_REASON_KEY = 'mm-signout-reason';
+function idleMinutes(){
+  const v = parseInt(localStorage.getItem(IDLE_KEY), 10);
+  return (v >= 5 && v <= 60 && v % 5 === 0) ? v : 15;
+}
+function lastActive(){ return parseInt(localStorage.getItem(ACTIVE_KEY), 10) || 0; }
+function markActive(force){
+  const now = Date.now();
+  // Throttled: writing on every keystroke or scroll event isn't needed.
+  if(force || now - lastActive() > 10000){ try{ localStorage.setItem(ACTIVE_KEY, String(now)); }catch(e){} }
+  hideIdleWarning();
+}
+function idleExpired(){ const t = lastActive(); return t > 0 && (Date.now() - t) > idleMinutes()*60000; }
+
+let idleSigningOut = false;
+async function idleSignOut(){
+  if(idleSigningOut || !session) return;
+  // With Face ID unlock on, inactivity locks the app rather than signing out.
+  if(biometricEnabled()){ if(appUnlocked) lockApp(); return; }
+  idleSigningOut = true;
+  // Let an edit that's still saving finish first (up to ~3 seconds).
+  for(let i=0; i<30 && hasPendingLocalChanges(); i++) await new Promise(r=> setTimeout(r, 100));
+  const minutes = idleMinutes();
+  try{ localStorage.removeItem(ACTIVE_KEY); }catch(e){}
+  if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  try{ await sb.auth.signOut(); }catch(e){}
+  // Saved only after sign-out has finished: signing out draws the login screen once,
+  // and that would otherwise use up this message just before the reload below.
+  try{ sessionStorage.setItem(SIGNOUT_REASON_KEY, `You were signed out after ${minutes} minutes of inactivity.`); }catch(e){}
+  // Reload so no budget data is left sitting in memory behind the sign-in screen.
+  window.location.reload();
+}
+
+function showIdleWarning(){
+  if(document.getElementById('idleWarning')) return;
+  const bar = document.createElement('div');
+  bar.id = 'idleWarning';
+  bar.className = 'idle-warning';
+  bar.innerHTML = biometricEnabled()
+    ? `<span>Money Manifest will lock in about a minute because of inactivity.</span><button class="btn small" id="idleStayBtn">Keep it open</button>`
+    : `<span>You'll be signed out in about a minute because of inactivity.</span><button class="btn small" id="idleStayBtn">Stay signed in</button>`;
+  document.body.appendChild(bar);
+  document.getElementById('idleStayBtn').addEventListener('click', ()=> markActive(true));
+}
+function hideIdleWarning(){ const w = document.getElementById('idleWarning'); if(w) w.remove(); }
+
+function checkIdle(){
+  if(!session || idleSigningOut || isLocked()) return;
+  if(idleExpired()){ idleSignOut(); return; }
+  const remaining = idleMinutes()*60000 - (Date.now() - lastActive());
+  if(lastActive() && remaining < 60000) showIdleWarning();
+}
+['pointerdown','keydown','wheel','touchstart'].forEach(ev=>
+  window.addEventListener(ev, ()=>{ if(session && !document.getElementById('idleWarning')) markActive(); }, { capture:true, passive:true }));
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') checkIdle(); });
+setInterval(checkIdle, 15000);
+
+let bootedUserId = null;
 async function boot(){
+  bootedUserId = session && session.user ? session.user.id : null;
+  if(freshSignIn){ appUnlocked = true; freshSignIn = false; }
+  // Face ID on: ask for it before loading any data (opening the app, or a long absence).
+  if(isLocked()){ renderLockScreen(''); attemptUnlock(); return; }
+  // Reopened after being away longer than the timeout: sign out instead of loading data.
+  if(idleExpired()){ idleSignOut(); return; }
+  markActive(true);
   renderLoading('Setting up your ledger…');
   try{
     if(!household) household = await findHousehold();
@@ -3994,6 +4352,7 @@ async function boot(){
     const { migrated } = await loadLedgerFromServer();
     subscribeRealtime();
     if(migrated) saveState();
+    ledgerLoaded = true;
     document.getElementById('gateRoot').innerHTML = '';
     document.getElementById('appRoot').style.display = '';
     const badge = document.getElementById('whoBadge');
@@ -4001,16 +4360,18 @@ async function boot(){
     render();
   }catch(err){
     console.error(err);
+    bootedUserId = null; // let a later sign-in event retry the setup
     renderLogin('Something went wrong loading your household: ' + err.message);
   }
 }
 
 async function handleNativeAuthRedirect(){
   // Only relevant inside the iOS app (Capacitor with the App plugin installed).
-  if(!(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App)) return;
-  window.Capacitor.Plugins.App.addListener('appUrlOpen', async ({ url })=>{
+  const AppPlugin = isNativeApp() ? nativePlugin('App') : null;
+  if(!AppPlugin) return;
+  AppPlugin.addListener('appUrlOpen', async ({ url })=>{
     if(!url || !url.includes('auth-callback')) return;
-    const Browser = window.Capacitor.Plugins.Browser;
+    const Browser = nativePlugin('Browser');
     try{ if(Browser) await Browser.close(); }catch(e){ /* sheet may already be closed */ }
     let params;
     try{ params = new URL(url).searchParams; }catch(e){ console.error('Bad callback URL', url); return; }
@@ -4043,10 +4404,17 @@ async function handleNativeAuthRedirect(){
   sb.auth.onAuthStateChange((event, sess)=>{
     session = sess;
     if(event === 'SIGNED_IN' || event === 'INITIAL_SESSION'){
-      if(session) boot(); else renderLogin();
+      if(!session){ renderLogin(); return; }
+      // Supabase re-announces SIGNED_IN whenever you come back to the tab or app (it
+      // re-checks the session). That's the same person, already loaded, so just keep
+      // the refreshed session. Only a different user needs the full setup.
+      if(bootedUserId === session.user.id) return;
+      boot();
     } else if(event === 'SIGNED_OUT'){
+      bootedUserId = null;
       renderLogin();
     }
+    // TOKEN_REFRESHED etc.: the session object above is all that needs updating.
   });
 })();
 
