@@ -1,0 +1,4058 @@
+// Money Manifest — app code.
+// Loaded by index.html after vendor/supabase.js, vendor/xlsx.full.min.js and config.js.
+// Kept out of index.html so the page's Content Security Policy can forbid any script
+// that isn't one of the site's own files.
+(function(){
+
+// ---- Keep the page at exactly the screen's width on iPhone ----
+// iOS zooms in whenever a text box with text smaller than 16px is tapped, and doesn't
+// zoom back out, which leaves the page wider than the screen. maximum-scale=1 stops that.
+// In the iPhone app, zoom is switched off entirely (normal for an app). On the website in
+// iOS Safari, pinch-to-zoom still works, because Safari keeps it for accessibility.
+(function fitViewportToScreen(){
+  const native = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if(!native && !iOS) return;
+  const meta = document.querySelector('meta[name="viewport"]');
+  if(meta) meta.setAttribute('content',
+    'width=device-width, initial-scale=1, maximum-scale=1' + (native ? ', user-scalable=no' : '') + ', viewport-fit=cover');
+})();
+
+/* ============================= SUPABASE CONFIG =============================
+   Fill these in after creating your Supabase project.
+   Settings → API Keys → "Publishable and secret API keys" tab.
+   Use the Publishable key here — never the Secret key, which must stay server-side.
+   ============================================================================ */
+// Your project's details live in config.js (loaded before this file), so app updates
+// never need your keys pasted back in.
+const CFG = window.MM_CONFIG || {};
+const SUPABASE_URL = String(CFG.SUPABASE_URL || '');
+const SUPABASE_PUBLISHABLE_KEY = String(CFG.SUPABASE_PUBLISHABLE_KEY || '');
+const APP_VERSION = '2026.10.03';
+
+// The public website. Inside the iPhone app, pages such as the privacy policy are opened
+// from here, because the app's own internal addresses can't be opened by iOS.
+const PUBLIC_SITE_URL = String(CFG.PUBLIC_SITE_URL || 'https://ozcruz-glitch.github.io/money-manifest/');
+
+const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
+  // PKCE flow — required for the native iOS build's deep-link handler below
+  // (exchangeCodeForSession only works with PKCE's code-based handoff; using implicit
+  // flow here while that handler expects PKCE was an inconsistency in its own right).
+  // The earlier "OAuth state parameter missing" failures turned out to be caused by
+  // SUPABASE_URL being set to the auth callback URL instead of the bare project URL —
+  // unrelated to PKCE vs implicit — so PKCE is safe to use now that that's fixed.
+  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'pkce' } })
+  : null;
+
+let session = null;
+let household = null; // { id, name, invite_code }
+
+function uuid(){
+  if(window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c=>{
+    const r = Math.random()*16|0, v = c==='x' ? r : (r&0x3|0x8);
+    return v.toString(16);
+  });
+}
+
+/* ============================= AUTH & ONBOARDING UI ============================= */
+
+// Every full-screen panel (sign-in, loading, household setup, Face ID lock) goes through
+// here. It hides the app and clears what's on screen, so nothing can be left sitting
+// underneath a panel (where scrolling down would reveal it). The app is shown again only
+// by boot() or a successful Face ID unlock.
+function gate(html){
+  const app = document.getElementById('appRoot');
+  if(app) app.style.display = 'none';
+  const views = document.getElementById('views');
+  if(views) views.innerHTML = '';
+  if(typeof hideIdleWarning === 'function') hideIdleWarning();
+  document.getElementById('gateRoot').innerHTML = `<div class="gate"><div class="gate-card">${html}</div></div>`;
+  window.scrollTo(0, 0);
+}
+
+function renderConfigMissing(){
+  gate(`
+    <div class="mark">Money Manifest</div>
+    <div class="sub">Set up needed</div>
+    <div class="gate-error">This copy of the app hasn't been connected to a Supabase project yet.
+    Add your SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY to config.js, then reload.</div>
+  `);
+}
+
+function renderLogin(errorMsg){
+  if(!errorMsg){
+    try{ errorMsg = sessionStorage.getItem(SIGNOUT_REASON_KEY) || ''; sessionStorage.removeItem(SIGNOUT_REASON_KEY); }catch(e){}
+  }
+  let lastProvider = '';
+  try{ lastProvider = sessionStorage.getItem('mm-last-provider') || ''; sessionStorage.removeItem('mm-last-provider'); }catch(e){}
+  gate(`
+    <div class="mark">Money Manifest</div>
+    <div class="sub">Sign in to open your household's ledger</div>
+    ${errorMsg ? `<div class="gate-error">${escapeHtml(errorMsg)}</div>` : ''}
+    <button class="oauth-btn apple" id="btnApple">Continue with Apple</button>
+    <button class="oauth-btn" id="btnGoogle">Continue with Google</button>
+    ${lastProvider === 'google' ? `
+    <div class="gate-google-note" id="googleSignOutNote">
+      <p>You're signed out of Money Manifest, but this ${isNativeApp() ? 'phone' : 'browser'} is still signed in to Google, so next time Google may let you straight back in. To make it ask for your password, sign out of Google too.</p>
+      <button class="btn small ghost" id="btnGoogleLogout">Also sign out of Google</button>
+      <p class="fine">This signs out of all Google services on this ${isNativeApp() ? 'phone' : 'browser'}, including Gmail.</p>
+    </div>` : ''}
+    <div class="gate-note">Your data is private to your household — only people you invite can see it.</div>
+  `);
+  const gl = document.getElementById('btnGoogleLogout');
+  if(gl) gl.addEventListener('click', ()=>{
+    const url = 'https://accounts.google.com/Logout';
+    const Browser = isNativeApp() ? nativePlugin('Browser') : null;
+    // In the app, use the same in-app browser that Google sign-in uses, so it's that
+    // browser's Google session that gets cleared.
+    if(Browser) Browser.open({ url, presentationStyle:'popover' }); else window.open(url, '_blank', 'noopener');
+    document.getElementById('googleSignOutNote').innerHTML = `<p>Google's sign-out page has opened. Once it's done, "Continue with Google" will ask you to choose an account and enter your password.</p>`;
+  });
+  document.getElementById('btnApple').addEventListener('click', ()=> signIn('apple'));
+  document.getElementById('btnGoogle').addEventListener('click', ()=> signIn('google'));
+}
+
+function isNativeApp(){
+  return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+}
+
+// Google keeps the browser signed in to Google itself, so after signing out of Money
+// Manifest, "Continue with Google" would otherwise go straight back in. Google doesn't
+// support forcing a password re-entry (it only accepts none / consent / select_account
+// for "prompt"), so the strongest option is to always show its account chooser. For a
+// real password check, the sign-in screen offers "Also sign out of Google" after a
+// Google user signs out.
+function providerQueryParams(provider){
+  return provider === 'google' ? { prompt: 'select_account' } : undefined;
+}
+
+async function signIn(provider){
+  markActive(true);
+  freshSignIn = true;
+  if(isNativeApp()){
+    // Inside the iOS app: Google refuses OAuth inside an embedded web view
+    // (error "disallowed_useragent"), so don't let Supabase navigate the app's own
+    // web view. Ask for the URL instead and open it in the system browser sheet
+    // (SFSafariViewController) via the Capacitor Browser plugin. The sign-in then
+    // returns through the app.moneymanifest:// deep link handled below.
+    const { data, error } = await sb.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: getRedirectUrl(), skipBrowserRedirect: true, queryParams: providerQueryParams(provider) }
+    });
+    if(error || !data || !data.url){
+      console.error('signInWithOAuth failed', error);
+      renderLogin('Could not start sign-in: ' + (error ? error.message : 'no sign-in URL returned'));
+      return;
+    }
+    const Browser = nativePlugin('Browser');
+    if(!Browser){
+      renderLogin('Sign-in needs the Capacitor Browser plugin — see the setup guide.');
+      return;
+    }
+    await Browser.open({ url: data.url, presentationStyle: 'popover' });
+    return;
+  }
+  const { error } = await sb.auth.signInWithOAuth({
+    provider,
+    options: { redirectTo: getRedirectUrl(), queryParams: providerQueryParams(provider) }
+  });
+  if(error){
+    console.error('signInWithOAuth failed', error);
+    renderLogin('Could not start sign-in: ' + error.message);
+  }
+}
+
+function getRedirectUrl(){
+  // Inside the native app this becomes a custom scheme registered in Xcode + Supabase's
+  // Auth → URL Configuration → Redirect URLs. In a plain browser it's just this page.
+  if(isNativeApp()){
+    return 'app.moneymanifest://auth-callback';
+  }
+  return window.location.origin + window.location.pathname;
+}
+
+function renderLoading(msg){
+  gate(`<div class="mark">Money Manifest</div><div class="gate-spinner">${escapeHtml(msg||'Loading…')}</div>`);
+}
+
+function renderOnboarding(){
+  gate(`
+    <div class="mark">Money Manifest</div>
+    <div class="sub">Set up your household</div>
+    <button class="onboard-choice" id="choiceCreate">
+      <div class="t">Start a new household</div>
+      <div class="d">You'll get an invite code to share with your partner.</div>
+    </button>
+    <button class="onboard-choice" id="choiceJoin">
+      <div class="t">Join with an invite code</div>
+      <div class="d">Someone already started your household's ledger.</div>
+    </button>
+    <div class="join-form" id="joinForm">
+      <input type="text" id="joinCode" maxlength="8" placeholder="CODE" autocapitalize="characters" autocomplete="off">
+      <button class="btn" style="width:100%;" id="joinSubmit">Join household</button>
+    </div>
+    <div id="onboardError"></div>
+  `);
+  document.getElementById('choiceCreate').addEventListener('click', createHousehold);
+  document.getElementById('choiceJoin').addEventListener('click', ()=>{
+    document.getElementById('joinForm').classList.add('show');
+  });
+  document.getElementById('joinSubmit').addEventListener('click', ()=>{
+    const code = document.getElementById('joinCode').value.trim().toUpperCase();
+    if(code) joinHousehold(code);
+  });
+}
+
+
+// Creating and joining a household go through database functions (see schema.sql).
+// The database checks the invite code itself; the app can no longer list households
+// or add anyone to a household directly. Each function runs as a single transaction,
+// so a half-created household can't be left behind.
+function householdRpcError(error, fallback){
+  const msg = (error && error.message) || '';
+  if(/could not find the function|function .* does not exist|schema cache/i.test(msg))
+    return 'The database needs updating — run the security fix SQL in Supabase, then try again.';
+  return fallback || msg || 'Something went wrong. Please try again.';
+}
+
+async function createHousehold(){
+  const { data, error } = await sb.rpc('create_household', { p_categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)) });
+  if(error || !data){ showOnboardError(householdRpcError(error, 'Could not set up your household. Please try again.')); return; }
+  household = Array.isArray(data) ? data[0] : data;
+  await boot();
+}
+
+async function joinHousehold(code){
+  const { data, error } = await sb.rpc('join_household', { p_code: code });
+  if(error || !data){
+    const msg = (error && error.message) || '';
+    showOnboardError(/No household found/i.test(msg) || !error
+      ? 'No household found with that code. Double-check it and try again.'
+      : householdRpcError(error));
+    return;
+  }
+  household = Array.isArray(data) ? data[0] : data;
+  await boot();
+}
+
+function showOnboardError(msg){
+  const el = document.getElementById('onboardError');
+  if(el) el.innerHTML = `<div class="gate-error">${escapeHtml(msg)}</div>`;
+}
+
+/* ============================= DATA LOADING & SYNC ============================= */
+
+async function findHousehold(){
+  const { data, error } = await sb
+    .from('household_members')
+    .select('household_id, households(*)')
+    .eq('user_id', session.user.id)
+    .limit(1)
+    .maybeSingle();
+  if(error) throw error;
+  return data ? data.households : null;
+}
+
+async function loadLedgerFromServer(){
+  const results = await Promise.all([
+    sb.from('ledger_settings').select('*').eq('household_id', household.id).maybeSingle(),
+    sb.from('expenses').select('*').eq('household_id', household.id),
+    sb.from('earners').select('*').eq('household_id', household.id),
+    sb.from('savings_buckets').select('*').eq('household_id', household.id),
+    sb.from('actuals').select('*').eq('household_id', household.id)
+  ]);
+  const tables = ['ledger_settings','expenses','earners','savings_buckets','actuals'];
+  const failed = results.map((r,i)=> r.error ? tables[i] : null).filter(Boolean);
+  if(failed.length){
+    // Don't let a failed read silently wipe the in-memory ledger with empty defaults —
+    // surface it and leave whatever was already loaded (or the login screen) in place.
+    throw new Error(`Could not load ${failed.join(', ')} (${results.find(r=>r.error).error.message})`);
+  }
+  const [{ data: settingsRow }, { data: exp }, { data: earn }, { data: buckets }, { data: actualRows }] = results;
+
+  state.users = (settingsRow && settingsRow.users) || [];
+  state.categories = (settingsRow && settingsRow.categories && settingsRow.categories.length) ? settingsRow.categories : JSON.parse(JSON.stringify(DEFAULT_CATEGORIES));
+  state.categoryColors = (settingsRow && settingsRow.category_colors) || {};
+  state.personColors = (settingsRow && settingsRow.person_colors) || {};
+  state.scenarios = (settingsRow && settingsRow.scenarios) || [];
+  state.accounts = (settingsRow && settingsRow.accounts) || [];
+  state.budgetName = household.name || '';
+  state.income.frequency = (settingsRow && settingsRow.income_frequency) || 'FORTNIGHTLY';
+  state.forecast = (settingsRow && settingsRow.forecast) || { months: 18, incomeGrowth: 0, expenseInflation: 2 };
+
+  state.expenses = (exp||[]).map(r=> ({ id:r.id, category:r.category, item:r.item, person:r.person, frequency:r.frequency, amount:Number(r.amount), account:r.account_id||'', actioned:!!r.actioned }));
+  state.income.earners = (earn||[]).map(r=> ({ id:r.id, name:r.name, monthly:Number(r.monthly), frequency:r.pay_frequency||null }));
+  state.savings.buckets = (buckets||[]).map(r=> ({ id:r.id, name:r.name, target:Number(r.target), start:Number(r.start_balance), monthly:Number(r.monthly), split:r.split||{} }));
+  state.actuals = (actualRows||[]).map(r=> ({ id:r.id, category:r.category, item:r.item, amount:Number(r.amount) }));
+
+  // Data saved before the pay-method setting existed (or by an older copy of the app
+  // still open on another device) was converted with x26/12. Mark it as such, then
+  // convert to the default x2 so each person's fortnightly amount is unchanged.
+  // Earlier versions had one pay frequency for the whole household, and some of them
+  // converted fortnightly pay to monthly as x26/12 rather than x2. Any earner without
+  // their own frequency is from that era: give them the old household frequency and,
+  // where needed, re-convert so their amount per pay is unchanged. Earners that already
+  // have a frequency were saved by this version and are left alone.
+  const legacyFactor = (state.forecast.payMethod === 'TWO_PAYS') ? 2 : 26/12;
+  let migrated = false;
+  state.income.earners.forEach(p=>{
+    if(PAYS_PER_MONTH[p.frequency]) return;
+    p.frequency = state.income.frequency === 'MONTHLY' ? 'MONTHLY' : 'FORTNIGHTLY';
+    if(p.frequency === 'FORTNIGHTLY') p.monthly = (Number(p.monthly)||0) / legacyFactor * 2;
+    migrated = true;
+  });
+  if(state.forecast.payMethod !== 'TWO_PAYS'){
+    state.forecast = Object.assign({}, state.forecast, { payMethod:'TWO_PAYS' });
+    migrated = true;
+  }
+  return { migrated };
+}
+
+let realtimeChannel = null;
+function subscribeRealtime(){
+  if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  let debounce = null;
+  const onChange = ()=>{
+    clearTimeout(debounce);
+    debounce = setTimeout(async ()=>{
+      if(hasPendingLocalChanges()){
+        // An edit here is still mid-debounce or mid-save — reloading now would
+        // overwrite it with the server's (older) state. Try again shortly instead
+        // of dropping this update entirely.
+        onChange();
+        return;
+      }
+      if(isEditingField()){
+        // You're typing in a field: a redraw now would kick you out of it and could
+        // replace what you've typed. Check again shortly.
+        onChange();
+        return;
+      }
+      const before = ledgerSnapshot();
+      const { migrated } = await loadLedgerFromServer();
+      if(migrated) saveState();
+      // Supabase sends every save back to all devices, including the one that made it.
+      // When nothing actually changed, skip the redraw entirely.
+      if(ledgerSnapshot() !== before) render();
+    }, 500);
+  };
+  realtimeChannel = sb.channel('household-'+household.id)
+    .on('postgres_changes', { event:'*', schema:'public', table:'expenses', filter:`household_id=eq.${household.id}` }, onChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'earners', filter:`household_id=eq.${household.id}` }, onChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'savings_buckets', filter:`household_id=eq.${household.id}` }, onChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'actuals', filter:`household_id=eq.${household.id}` }, onChange)
+    .on('postgres_changes', { event:'*', schema:'public', table:'ledger_settings', filter:`household_id=eq.${household.id}` }, onChange)
+    .subscribe((status, err)=>{
+      const note = document.getElementById('saveNote');
+      if(status === 'CHANNEL_ERROR' || status === 'TIMED_OUT'){
+        console.error('Realtime subscription problem:', status, err);
+        // Live sync with your partner's device has stopped — saving your own
+        // changes still works, you just won't see theirs appear automatically
+        // until this reconnects or the page is reloaded.
+        if(note) note.textContent = 'Live sync interrupted — reload to reconnect';
+      } else if(status === 'CLOSED'){
+        console.warn('Realtime channel closed');
+      }
+    });
+}
+
+async function syncDeleteRow(table, id){
+  try{
+    const { error } = await sb.from(table).delete().eq('id', id);
+    if(error){
+      console.error('delete failed', table, id, error);
+      const note = document.getElementById('saveNote');
+      if(note) note.textContent = 'Sync failed — check connection';
+    }
+  }catch(e){
+    console.error('delete failed', table, id, e);
+    const note = document.getElementById('saveNote');
+    if(note) note.textContent = 'Sync failed — check connection';
+  }
+}
+
+let saveTimer = null;
+let syncInFlight = false;
+function isEditingField(){
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest('#appRoot') && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName));
+}
+function ledgerSnapshot(){
+  return JSON.stringify([state.expenses, state.income, state.savings, state.users, state.categories,
+    state.categoryColors, state.personColors, state.actuals, state.scenarios, state.forecast, state.accounts]);
+}
+function hasPendingLocalChanges(){ return saveTimer !== null || syncInFlight; }
+
+function saveState(){
+  const note = document.getElementById('saveNote');
+  if(note) note.textContent = 'Syncing…';
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async ()=>{
+    saveTimer = null;
+    syncInFlight = true;
+    try{
+      const expRows = state.expenses.map(e=> ({ id:e.id, household_id:household.id, category:e.category, item:e.item, person:e.person, frequency:e.frequency, amount:e.amount, account_id:e.account||null, actioned:!!e.actioned }));
+      const earnRows = state.income.earners.map(p=> ({ id:p.id, household_id:household.id, name:p.name, monthly:p.monthly, pay_frequency:earnerFreq(p) }));
+      const bucketRows = state.savings.buckets.map(b=> ({ id:b.id, household_id:household.id, name:b.name, target:b.target, start_balance:b.start||0, monthly:b.monthly, split:b.split||{} }));
+      const actualRows = state.actuals.map(a=> ({ id:a.id, household_id:household.id, category:a.category, item:a.item, amount:a.amount }));
+
+      const calls = [
+        sb.from('ledger_settings').upsert({
+          household_id: household.id,
+          users: state.users,
+          categories: state.categories,
+          category_colors: state.categoryColors,
+          person_colors: state.personColors,
+          scenarios: state.scenarios,
+          accounts: state.accounts,
+          income_frequency: state.income.frequency,
+          forecast: state.forecast
+        })
+      ];
+      if(expRows.length) calls.push(sb.from('expenses').upsert(expRows));
+      if(earnRows.length) calls.push(sb.from('earners').upsert(earnRows));
+      if(bucketRows.length) calls.push(sb.from('savings_buckets').upsert(bucketRows));
+      if(actualRows.length) calls.push(sb.from('actuals').upsert(actualRows));
+
+      const results = await Promise.all(calls);
+      const failed = results.find(r=> r && r.error);
+      if(failed){
+        console.error('sync failed', failed.error);
+        // A missing column means the app was updated before the database was. Say so
+        // plainly — otherwise it looks like a connection problem and nothing saves.
+        const msg = (failed.error && failed.error.message) || '';
+        if(note) note.textContent = /column|schema cache/i.test(msg)
+          ? 'Database needs updating — run the latest schema.sql block'
+          : 'Sync failed — check connection';
+      } else if(note){
+        note.textContent = 'Synced';
+      }
+    }catch(e){
+      console.error(e);
+      if(note) note.textContent = 'Sync failed — check connection';
+    } finally {
+      syncInFlight = false;
+    }
+  }, 350);
+}
+
+
+
+/* ============================= DATA ============================= */
+
+const DEFAULT_EXPENSES = [
+ ["BILLS","ELECTRICITY","All","MONTHLY",150],
+ ["BILLS","HOT WATER / GAS","All","MONTHLY",110],
+ ["BILLS","WATER","All","MONTHLY",110],
+ ["BILLS","INTERNET","All","MONTHLY",110],
+ ["CAR","INSURANCE","All","MONTHLY",0],
+ ["CAR","FUEL","All","MONTHLY",200],
+ ["CAR","TIRES","All","YEARLY",0],
+ ["CAR","REGISTRATION","All","YEARLY",0],
+ ["CAR","SERVICE","All","YEARLY",0],
+ ["EXPENSES","CARPARKING","All","MONTHLY",150],
+ ["EXPENSES","MYKI","All","MONTHLY",180],
+ ["EXPENSES","LUNA FOOD","All","MONTHLY",160],
+ ["EXPENSES","GROCERIES","All","MONTHLY",750],
+ ["EXPENSES","LUNA HEALTH","All","YEARLY",400],
+ ["INSURANCES","APPLE CARE - PT","PT","MONTHLY",20.5],
+ ["INSURANCES","LUNA","All","MONTHLY",274.57],
+ ["INSURANCES","HEALTH - OCM","OCM","MONTHLY",270],
+ ["INSURANCES","HEALTH - PT","PT","MONTHLY",280],
+ ["LOANS","CAR LOAN","All","MONTHLY",1566.74],
+ ["LOANS","APPLE","All","MONTHLY",0],
+ ["LOANS","CITIBANK","All","MONTHLY",0],
+ ["MORTGAGE / RENTAL","MORTGAGE","All","MONTHLY",2888],
+ ["SUBSCRIPTIONS","GYM: OSCAR","OCM","MONTHLY",60],
+ ["SUBSCRIPTIONS","MEDICINE: OCM","OCM","MONTHLY",90],
+ ["SUBSCRIPTIONS","YOGA APP","PT","MONTHLY",23],
+ ["SUBSCRIPTIONS","NETFLIX","All","MONTHLY",26],
+ ["SUBSCRIPTIONS","PARAMOUNT","All","MONTHLY",11],
+ ["SUBSCRIPTIONS","APPLE ONE","All","MONTHLY",50],
+ ["SUBSCRIPTIONS","ICLOUD","All","MONTHLY",15],
+ ["SUBSCRIPTIONS","CREATIVE CLOUD","All","MONTHLY",141],
+ ["SUBSCRIPTIONS","GROUND NEWS","All","MONTHLY",6],
+ ["SUBSCRIPTIONS","HBO MAX","All","MONTHLY",22],
+ ["SUBSCRIPTIONS","PHONE BILL - OCM","OCM","MONTHLY",75],
+ ["SUBSCRIPTIONS","PHONE BILL - PT","PT","MONTHLY",62],
+ ["YEARLY BILLS","BODY CORP","All","YEARLY",7500],
+ ["YEARLY BILLS","COUNCIL FEES","All","YEARLY",2000],
+ ["YEARLY BILLS","LUNA VACCINATION","All","YEARLY",150],
+ ["YEARLY BILLS","COUNCIL FEES - LUNA","All","YEARLY",80],
+ ["YEARLY BILLS","LUNA MEDICINE","All","YEARLY",164],
+ ["YEARLY BILLS","ARCHITECTS REGO - OCM","OCM","YEARLY",550],
+ ["YEARLY BILLS","ARCHITECTS REGO - PT","PT","YEARLY",550]
+].map((r,i)=>({ id:'e'+i, category:r[0], item:r[1], person:r[2], frequency:r[3], amount:r[4] }));
+
+const DEFAULT_USERS = ['OCM','PT'];
+const DEFAULT_CATEGORIES = ['BILLS','CAR','EXPENSES','INSURANCES','LOANS','MORTGAGE / RENTAL','SUBSCRIPTIONS','YEARLY BILLS'];
+
+const DEFAULT_INCOME = {
+  frequency: 'FORTNIGHTLY',
+  earners: [
+    { id:'p1', name:'OCM', monthly: 4200 },
+    { id:'p2', name:'PT', monthly: 3800 }
+  ]
+};
+
+const DEFAULT_SAVINGS = {
+  buckets: [
+    { id:'s1', name:'Emergency fund', target:10000, start:0, monthly:300 },
+    { id:'s2', name:'Holiday', target:4000, start:0, monthly:150 },
+    { id:'s3', name:'Home & Luna', target:2000, start:0, monthly:100 }
+  ]
+};
+
+const CATEGORY_COLORS = {
+  'BILLS':'var(--cat-bills)','CAR':'var(--cat-car)','EXPENSES':'var(--cat-expenses)',
+  'INSURANCES':'var(--cat-insurances)','LOANS':'var(--cat-loans)','MORTGAGE / RENTAL':'var(--cat-mortgage)',
+  'SUBSCRIPTIONS':'var(--cat-subscriptions)','YEARLY BILLS':'var(--cat-yearly)'
+};
+const EXTRA_PALETTE = ['var(--cat-extra1)','var(--cat-extra2)','var(--cat-extra3)','#5C6BC0','#8D6E63','#3E8E7E'];
+let extraIdx = 0;
+function colorFor(cat){
+  cat = (cat||'UNSORTED').toUpperCase();
+  if(state.categoryColors && state.categoryColors[cat]) return state.categoryColors[cat];
+  if(!CATEGORY_COLORS[cat]){
+    CATEGORY_COLORS[cat] = EXTRA_PALETTE[extraIdx % EXTRA_PALETTE.length];
+    extraIdx++;
+  }
+  return CATEGORY_COLORS[cat];
+}
+function resolveVar(v){
+  if(v.indexOf('var(')===0){
+    const name = v.slice(4,-1).trim();
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  return v;
+}
+function rgbToHex(v){
+  if(v.startsWith('#')) return v;
+  const m = v.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if(!m) return '#888888';
+  return '#' + [m[1],m[2],m[3]].map(n=> (+n).toString(16).padStart(2,'0')).join('');
+}
+
+/* ============================= STATE ============================= */
+
+let state = {
+  expenses: JSON.parse(JSON.stringify(DEFAULT_EXPENSES)),
+  income: JSON.parse(JSON.stringify(DEFAULT_INCOME)),
+  savings: JSON.parse(JSON.stringify(DEFAULT_SAVINGS)),
+  users: JSON.parse(JSON.stringify(DEFAULT_USERS)),
+  categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)),
+  categoryColors: {},
+  personColors: {},
+  actuals: [],
+  scenarios: [],
+  budgetName: '',
+  accounts: [],   // bank accounts expenses can be nominated to: [{ id, name, details }]
+  forecast: { months: 18, incomeGrowth: 0, expenseInflation: 2 }
+};
+
+function allCategories(){
+  const derived = Array.from(new Set(state.expenses.map(e=> (e.category||'UNSORTED').toUpperCase())));
+  const known = Array.from(new Set([...(state.categories||[]), ...derived]));
+  return known;
+}
+
+let currentView = 'home';   // the Home screen opens first after signing in
+// IDs must be real UUIDs (the database columns require it), so there's no meaningful
+// prefix to apply here — this just wraps uuid() for a consistent call style everywhere.
+const newId = ()=> uuid();
+
+/* ============================= CALCULATIONS ============================= */
+
+function monthlyOf(exp){ return exp.frequency === 'YEARLY' ? (Number(exp.amount)||0)/12 : (Number(exp.amount)||0); }
+function totalMonthlyExpenses(){ return state.expenses.reduce((s,e)=> s + monthlyOf(e), 0); }
+function totalMonthlyIncome(){ return state.income.earners.reduce((s,p)=> s + (Number(p.monthly)||0), 0); }
+function totalMonthlySavings(){ return state.savings.buckets.reduce((s,b)=> s + (Number(b.monthly)||0), 0); }
+function leftover(){ return totalMonthlyIncome() - totalMonthlyExpenses() - totalMonthlySavings(); }
+
+function categoryTotals(){
+  const map = {};
+  state.expenses.forEach(e=>{
+    const cat = (e.category||'UNSORTED').toUpperCase();
+    map[cat] = (map[cat]||0) + monthlyOf(e);
+  });
+  return map;
+}
+
+function fmt(n, decimals){
+  const neg = n < 0;
+  n = Math.abs(n);
+  const s = n.toLocaleString('en-AU', { minimumFractionDigits: decimals||0, maximumFractionDigits: decimals||0 });
+  return (neg?'-':'') + '$' + s;
+}
+function pct(n){ return (n*100).toFixed(1)+'%'; }
+
+/* ============================= RENDER: SHELL ============================= */
+
+function renderStrip(){
+  const inc = totalMonthlyIncome(), exp = totalMonthlyExpenses(), sav = totalMonthlySavings(), left = leftover();
+  document.getElementById('statIncome').textContent = fmt(inc);
+  document.getElementById('statExpenses').textContent = fmt(exp);
+  document.getElementById('statSavings').textContent = fmt(sav);
+  const leftEl = document.getElementById('statLeftover');
+  leftEl.textContent = fmt(left);
+  const wrap = document.getElementById('statLeftoverWrap');
+  wrap.className = 'stat ' + (left < 0 ? 'warn' : 'good');
+}
+
+function setView(v){
+  currentView = v;
+  document.querySelectorAll('.tab').forEach(t=> t.classList.toggle('active', t.dataset.view===v));
+  render();
+  // Start each section at the top, and keep the chosen tab visible in the phone menu bar.
+  window.scrollTo(0, 0);
+  const active = document.querySelector(`.tab[data-view="${v}"]`);
+  if(active && active.scrollIntoView) active.scrollIntoView({ block:'nearest', inline:'nearest' });
+}
+
+// ---- Redraw scheduling ----
+// Every edit redraws the screen, which replaces every input with a fresh copy. Done
+// naively, that throws away whichever field you're in: a field's "change" fires as you
+// leave it, so the redraw used to land mid-click or mid-Tab and destroy the field you
+// were moving into (and could swallow a button click). So: wait until a pointer press
+// has finished, run change-triggered redraws after focus has moved, and put the
+// cursor back where it was afterwards.
+let pointerIsDown = false, renderPending = false, renderQueued = false;
+window.addEventListener('pointerdown', ()=>{ pointerIsDown = true; }, true);
+function releasePointer(){
+  if(!pointerIsDown) return;
+  pointerIsDown = false;
+  // Let the click (fired after pointerup) run first, then redraw if still needed.
+  setTimeout(()=>{ if(renderPending) render(); }, 0);
+}
+window.addEventListener('pointerup', releasePointer, true);
+window.addEventListener('pointercancel', releasePointer, true);
+
+function render(){
+  if(isLocked()) return;   // locked: keep budget data off the screen until Face ID passes
+  if(pointerIsDown){
+    renderPending = true;
+    // Safety net in case a pointerup never arrives (e.g. released outside the window).
+    setTimeout(()=>{ if(renderPending){ pointerIsDown = false; render(); } }, 800);
+    return;
+  }
+  if(window.event && window.event.type === 'change'){
+    if(!renderQueued){
+      renderQueued = true;
+      setTimeout(()=>{ renderQueued = false; render(); }, 0);
+    }
+    return;
+  }
+  renderPending = false;
+  const focus = captureFocus();
+  doRender();
+  restoreFocus(focus);
+}
+
+function focusKey(el){
+  if(!el || el===document.body || !el.closest || !el.closest('#appRoot')) return null;
+  if(!/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(el.tagName)) return null;
+  if(el.id) return '#' + CSS.escape(el.id);
+  const attrs = [...el.attributes].filter(a=> a.name.startsWith('data-'));
+  if(!attrs.length) return null;
+  return el.tagName.toLowerCase() + attrs.map(a=> `[${a.name}="${CSS.escape(a.value)}"]`).join('');
+}
+function captureFocus(){
+  const el = document.activeElement, key = focusKey(el);
+  if(!key) return null;
+  let start = null, end = null;
+  try{ start = el.selectionStart; end = el.selectionEnd; }catch(e){ /* number inputs have no selection API */ }
+  return { key, start, end };
+}
+function restoreFocus(f){
+  if(!f) return;
+  let el = null;
+  try{ el = document.querySelector(f.key); }catch(e){ return; }
+  if(!el) return;
+  el.focus({ preventScroll:true });
+  try{ if(f.start!=null) el.setSelectionRange(f.start, f.end); }catch(e){ /* not supported for this input type */ }
+}
+
+function doRender(){
+  renderStrip();
+  const root = document.getElementById('views');
+  root.innerHTML = '';
+  const view = document.createElement('div');
+  view.className = 'view' + (currentView==='flow' ? ' view-wide' : '');
+  root.appendChild(view);
+  if(currentView==='home') renderHome(view);
+  else if(currentView==='overview') renderOverview(view);
+  else if(currentView==='expenses') renderExpenses(view);
+  else if(currentView==='actual') renderActual(view);
+  else if(currentView==='income') renderIncome(view);
+  else if(currentView==='savings') renderSavings(view);
+  else if(currentView==='forecast') renderForecast(view);
+  else if(currentView==='scenarios') renderScenarios(view);
+  else if(currentView==='flow') renderFlow(view);
+  else if(currentView==='settings') renderSettings(view);
+}
+
+/* ============================= HOME ============================= */
+
+const HOME_ICONS = {
+  overview:'<path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/>',
+  expenses:'<path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/><line x1="9" y1="15" x2="13" y2="15"/>',
+  actual:'<polyline points="9 11 12 14 20 6"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>',
+  income:'<rect x="2" y="6" width="20" height="13" rx="2"/><path d="M16 12.5h2"/><path d="M2 10h20"/>',
+  savings:'<path d="M19 9a7 7 0 1 0-13.4 2.8L4 16h3l1 3h3v-2h2v2h3l1-3a7 7 0 0 0 2-8z"/><circle cx="15" cy="9" r="1"/>',
+  forecast:'<polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/>',
+  scenarios:'<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6h3a4 4 0 0 1 4 4v0M8 18h3a4 4 0 0 0 4-4v0"/>',
+  flow:'<path d="M3 6c6 0 6 6 12 6h6"/><path d="M3 18c6 0 6-6 12-6"/><path d="M3 12h6"/>',
+  settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'
+};
+function homeIcon(key){
+  return `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${HOME_ICONS[key]||''}</svg>`;
+}
+
+function renderHome(root){
+  const h = new Date().getHours();
+  const hello = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  const left = leftover();
+  const plural = (n, one, many)=> `${n} ${n===1 ? one : (many || one+'s')}`;
+  const done = state.expenses.filter(e=> e.actioned).length;
+  const actualTotal = totalActual();
+  const tiles = [
+    { v:'overview',  t:'Overview',  fig:`${fmt(totalMonthlyExpenses())}/mo across ${plural(Object.keys(categoryTotals()).length,'category','categories')}`, d:'Where the month\'s money goes, by category.' },
+    { v:'expenses',  t:'Expenses',  fig:`${fmt(totalMonthlyExpenses())}/mo · ${plural(state.expenses.length,'bill')}` + (state.accounts.length && state.expenses.length ? ` · ${done} done` : ''), d:'Bills, accounts and transfers.' },
+    { v:'actual',    t:'Actual',    fig: state.actuals.length ? `${fmt(actualTotal)} recorded` : 'No spending entered yet', d:'Real spending against your budget.' },
+    { v:'income',    t:'Income',    fig:`${fmt(totalMonthlyIncome())}/mo`, d:'Everyone\'s pay and how often it arrives.' },
+    { v:'savings',   t:'Savings',   fig:`${fmt(totalMonthlySavings())}/mo · ${plural(state.savings.buckets.length,'goal')}`, d:'Goals, targets and who\'s contributing.' },
+    { v:'forecast',  t:'Forecast',  fig:`${(state.forecast && state.forecast.months) || 18}-month outlook`, d:'Project your balance forward.' },
+    { v:'scenarios', t:'Scenarios', fig: state.scenarios.length ? `${plural(state.scenarios.length,'scenario')} saved` : 'Test a what-if budget', d:'Try changes without touching the real budget.' },
+    { v:'flow',      t:'Flow',      fig:'Every dollar, start to finish', d:'Income flowing into bills and savings.' },
+    { v:'settings',  t:'Settings',  fig:`${state.users.length} ${state.users.length===1?'person':'people'} · ${plural(state.accounts.length,'account')}`, d:'People, categories, security and export.' }
+  ];
+  const status = left < -0.004
+    ? `<div class="flow-callout warn">⚠ Over budget by ${fmt(-left)}/mo. Expenses and savings add up to more than your income.</div>`
+    : left > 0.004
+      ? `<div class="flow-callout good">💰 ${fmt(left)}/mo left over after bills and savings.</div>`
+      : `<div class="flow-callout neutral">Every dollar of income is allocated.</div>`;
+  root.innerHTML = `
+    <h2 class="home-hello">${hello}</h2>
+    <p class="home-sub">${escapeHtml(state.budgetName || 'Your household budget')} · choose where to go</p>
+    ${state.income.earners.length || state.expenses.length ? status : ''}
+    <div class="home-grid">
+      ${tiles.map(x=> `<button class="home-tile" data-go="${x.v}" aria-label="${escapeHtml(x.t)}: ${escapeHtml(x.fig)}">
+        <span class="home-ico">${homeIcon(x.v)}</span>
+        <span class="t">${escapeHtml(x.t)}</span>
+        <span class="fig">${escapeHtml(x.fig)}</span>
+        <span class="d">${escapeHtml(x.d)}</span>
+      </button>`).join('')}
+    </div>`;
+  root.querySelectorAll('[data-go]').forEach(b=> b.addEventListener('click', ()=> setView(b.dataset.go)));
+}
+
+/* ============================= OVERVIEW ============================= */
+
+function renderOverview(root){
+  root.innerHTML = `
+    <h2>Where the month's money goes</h2>
+    <p class="lede">A running picture of income, fixed costs and savings, built from your Expenses, Income and Savings tabs.</p>
+    <div class="overview-grid">
+      <div>
+        <div class="block-head"><h3>By category</h3></div>
+        <div id="donutWrap" class="chart-wrap"></div>
+        <ul class="legend" id="legendList"></ul>
+      </div>
+      <div>
+        <div class="block-head"><h3>Largest commitments</h3><span class="hint">Monthly equivalent</span></div>
+        <table class="top-items" id="topItems"></table>
+
+        <div class="block-head" style="margin-top:26px;"><h3>Monthly balance</h3></div>
+        <div class="chart-wrap" id="balanceBar"></div>
+      </div>
+    </div>
+  `;
+
+  const totals = categoryTotals();
+  const cats = Object.keys(totals).sort((a,b)=> totals[b]-totals[a]);
+  const grand = cats.reduce((s,c)=> s+totals[c], 0) || 1;
+
+  const donutData = cats.map(c=> ({ label:c, value: totals[c], color: resolveVar(colorFor(c)) }));
+  document.getElementById('donutWrap').appendChild(donutChart(donutData, grand));
+
+  const legend = document.getElementById('legendList');
+  cats.forEach(c=>{
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="swatch" style="background:${colorFor(c)}"></span>
+      <span class="name">${escapeHtml(titleCase(c))}</span>
+      <span class="amt">${fmt(totals[c])}</span>
+      <span class="pct">${pct(totals[c]/grand)}</span>`;
+    legend.appendChild(li);
+  });
+  if(cats.length===0){ legend.innerHTML = '<div class="empty">No expenses yet — add some in the Expenses tab.</div>'; }
+
+  const top = [...state.expenses].sort((a,b)=> monthlyOf(b)-monthlyOf(a)).slice(0,8);
+  const tbl = document.getElementById('topItems');
+  tbl.innerHTML = top.map(e=> `<tr>
+      <td><span class="tag" style="background:${colorFor(e.category)}">${escapeHtml(titleCase(e.category))}</span></td>
+      <td>${escapeHtml(e.item||'Untitled')}</td>
+      <td class="amt">${fmt(monthlyOf(e))}</td>
+    </tr>`).join('') || '<tr><td class="empty">Nothing to show yet.</td></tr>';
+
+  const inc = totalMonthlyIncome(), exp = totalMonthlyExpenses(), sav = totalMonthlySavings();
+  document.getElementById('balanceBar').appendChild(balanceChart(inc, exp, sav));
+}
+
+function titleCase(s){
+  return (s||'').toLowerCase().replace(/\b\w/g, c=>c.toUpperCase());
+}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+/* ---- donut chart (pure SVG) ---- */
+function donutChart(data, total){
+  const size = 220, r = 84, cx=110, cy=110, sw=26;
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox','0 0 220 220');
+  svg.setAttribute('width','220'); svg.setAttribute('height','220');
+  svg.style.display='block'; svg.style.margin='0 auto';
+
+  const bg = document.createElementNS(ns,'circle');
+  bg.setAttribute('cx',cx); bg.setAttribute('cy',cy); bg.setAttribute('r',r);
+  bg.setAttribute('fill','none'); bg.setAttribute('stroke', resolveVar('var(--rule)')); bg.setAttribute('stroke-width', sw);
+  svg.appendChild(bg);
+
+  let offset = 0;
+  const circumference = 2 * Math.PI * r;
+  const labelGroup = document.createElementNS(ns,'g');
+  data.forEach(d=>{
+    const frac = total>0 ? d.value/total : 0;
+    const len = frac * circumference;
+    const seg = document.createElementNS(ns,'circle');
+    seg.setAttribute('cx',cx); seg.setAttribute('cy',cy); seg.setAttribute('r',r);
+    seg.setAttribute('fill','none'); seg.setAttribute('stroke', d.color); seg.setAttribute('stroke-width', sw);
+    seg.setAttribute('stroke-dasharray', `${len} ${circumference-len}`);
+    seg.setAttribute('stroke-dashoffset', -offset);
+    seg.setAttribute('transform', `rotate(-90 ${cx} ${cy})`);
+    svg.appendChild(seg);
+
+    if(frac >= 0.035){
+      const midArc = offset + len/2;
+      const thetaDeg = -90 + (midArc/circumference)*360;
+      const thetaRad = thetaDeg * Math.PI/180;
+      const lx = cx + r*Math.cos(thetaRad);
+      const ly = cy + r*Math.sin(thetaRad);
+      const t = document.createElementNS(ns,'text');
+      t.setAttribute('x', lx); t.setAttribute('y', ly+4);
+      t.setAttribute('text-anchor','middle'); t.setAttribute('font-size','11.5');
+      t.setAttribute('font-weight','700'); t.setAttribute('fill', '#fff');
+      t.setAttribute('paint-order','stroke');
+      t.setAttribute('stroke', 'rgba(0,0,0,0.35)'); t.setAttribute('stroke-width','2.5');
+      t.textContent = Math.round(frac*100) + '%';
+      labelGroup.appendChild(t);
+    }
+    offset += len;
+  });
+  svg.appendChild(labelGroup);
+
+  const label = document.createElementNS(ns,'text');
+  label.setAttribute('x',cx); label.setAttribute('y',cy-4);
+  label.setAttribute('text-anchor','middle'); label.setAttribute('font-size','19');
+  label.setAttribute('font-weight','600'); label.setAttribute('fill', resolveVar('var(--ink)'));
+  label.textContent = fmt(total);
+  svg.appendChild(label);
+  const label2 = document.createElementNS(ns,'text');
+  label2.setAttribute('x',cx); label2.setAttribute('y',cy+14);
+  label2.setAttribute('text-anchor','middle'); label2.setAttribute('font-size','10.5');
+  label2.setAttribute('fill', resolveVar('var(--ink-soft)'));
+  label2.textContent = 'per month';
+  svg.appendChild(label2);
+
+  return svg;
+}
+
+function balanceChart(income, expenses, savings){
+  const ns='http://www.w3.org/2000/svg';
+  const w=440, h=90, pad=14;
+  const svg = document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
+  svg.setAttribute('width','100%'); svg.setAttribute('height',h);
+  const max = Math.max(income, expenses+savings, 1);
+  const rows = [
+    { label:'Income', value: income, color: resolveVar('var(--brand)') },
+    { label:'Expenses', value: expenses, color: resolveVar('var(--cat-loans)') },
+    { label:'Savings', value: savings, color: resolveVar('var(--savings)') }
+  ];
+  const bh = 18, gap = 12;
+  rows.forEach((r,i)=>{
+    const y = i*(bh+gap) + 8;
+    const bw = (r.value/max) * (w - pad*2 - 90);
+    const t = document.createElementNS(ns,'text');
+    t.setAttribute('x',0); t.setAttribute('y', y+bh-5); t.setAttribute('font-size','11.5');
+    t.setAttribute('fill', resolveVar('var(--ink-soft)'));
+    t.textContent = r.label;
+    svg.appendChild(t);
+    const rect = document.createElementNS(ns,'rect');
+    rect.setAttribute('x',80); rect.setAttribute('y',y); rect.setAttribute('height',bh);
+    rect.setAttribute('width', Math.max(bw,2)); rect.setAttribute('rx',2);
+    rect.setAttribute('fill', r.color);
+    svg.appendChild(rect);
+    const vt = document.createElementNS(ns,'text');
+    vt.setAttribute('x', 88+bw); vt.setAttribute('y', y+bh-5); vt.setAttribute('font-size','11.5');
+    vt.setAttribute('fill', resolveVar('var(--ink)')); vt.setAttribute('font-weight','600');
+    vt.textContent = fmt(r.value);
+    svg.appendChild(vt);
+  });
+  return svg;
+}
+
+/* ============================= EXPENSES ============================= */
+
+function whoOptions(selected){
+  const opts = ['All', ...state.users];
+  return opts.map(u=> `<option value="${escapeHtml(u)}" ${u===selected?'selected':''}>${escapeHtml(u)}</option>`).join('');
+}
+
+function accountOptions(selected){
+  const opts = [`<option value="" ${!selected?'selected':''}>—</option>`]
+    .concat(state.accounts.map(a=> `<option value="${escapeHtml(a.id)}" ${a.id===selected?'selected':''}>${escapeHtml(a.name)}</option>`));
+  return opts.join('');
+}
+
+function accountSummary(accountId){
+  const items = state.expenses.filter(e=> (e.account||'') === accountId);
+  return {
+    monthly: items.reduce((s,e)=> s + monthlyOf(e), 0),
+    count: items.length,
+    done: items.filter(e=> e.actioned).length
+  };
+}
+
+// ---- Transfers per person ----
+// Bills nominated to an account are paid by: the person named on the bill, or for
+// shared bills (Who = "All", or someone no longer in the household) everyone equally.
+// Each person transfers fortnightly or monthly (defaulting to how they're paid on the
+// Income tab); fortnightly = monthly share / 2, matching how pay is counted. These
+// preferences and the "Transferred" ticks live in the existing forecast JSON column,
+// so no database change is needed.
+function transferPrefs(){
+  const f = state.forecast || {};
+  return { freq: f.transferFreq || {}, done: f.transferDone || {} };
+}
+function setTransferPrefs(freq, done){
+  state.forecast = Object.assign({}, state.forecast, { transferFreq: freq, transferDone: done });
+}
+function personTransferFreq(person){
+  const saved = transferPrefs().freq[person];
+  if(saved === 'FORTNIGHTLY' || saved === 'MONTHLY') return saved;
+  const earner = state.income.earners.find(p=> (p.name||'').trim().toLowerCase() === person.trim().toLowerCase());
+  if(earner) return earnerFreq(earner);
+  return anyFortnightlyEarner() ? 'FORTNIGHTLY' : 'MONTHLY';
+}
+function expenseShares(e){
+  if(!state.users.length) return {};
+  if(state.users.includes(e.person)) return { [e.person]: 1 };
+  const each = 1 / state.users.length, out = {};
+  state.users.forEach(u=> out[u] = each);
+  return out;
+}
+// { person: { accountId: monthlyAmount } } for every account with bills nominated to it
+function transfersByPerson(){
+  const out = {};
+  state.users.forEach(u=> out[u] = {});
+  state.expenses.forEach(e=>{
+    if(!e.account || !state.accounts.some(a=> a.id===e.account)) return;
+    const shares = expenseShares(e);
+    Object.keys(shares).forEach(u=>{ out[u][e.account] = (out[u][e.account]||0) + monthlyOf(e)*shares[u]; });
+  });
+  return out;
+}
+const doneKey = (person, accId)=> person + '|' + accId;
+
+function accountOptions(selected){
+  const opts = [`<option value="" ${!selected?'selected':''}>—</option>`]
+    .concat(state.accounts.map(a=> `<option value="${escapeHtml(a.id)}" ${a.id===selected?'selected':''}>${escapeHtml(a.name)}</option>`));
+  return opts.join('');
+}
+
+function accountSummary(accountId){
+  const items = state.expenses.filter(e=> (e.account||'') === accountId);
+  return {
+    monthly: items.reduce((s,e)=> s + monthlyOf(e), 0),
+    count: items.length,
+    done: items.filter(e=> e.actioned).length
+  };
+}
+
+function renderAccountsPanel(){
+  const wrap = document.getElementById('accountsPanel');
+  const row = (a, s, isUnassigned)=>{
+    const prog = s.count ? `${s.done} of ${s.count} done` : 'No bills';
+    return `<div class="acct-row">
+      ${isUnassigned
+        ? `<span style="font-weight:600; color:var(--ink-soft);">Not assigned</span><span class="details-col"></span>`
+        : `<input type="text" value="${escapeHtml(a.name)}" data-acc-id="${escapeHtml(a.id)}" data-acc-field="name" aria-label="Account name">
+           <input class="details-col" type="text" value="${escapeHtml(a.details||'')}" data-acc-id="${escapeHtml(a.id)}" data-acc-field="details" placeholder="Details (optional)" aria-label="Account details">`}
+      <span class="num">${fmt(s.monthly, 2)}<span style="color:var(--ink-soft); font-size:11px;"> /mo</span></span>
+      <span class="prog ${s.count && s.done===s.count ? 'complete' : ''}">${prog}</span>
+      ${isUnassigned ? '<span></span>' : `<button class="icon-btn" data-del-acc="${escapeHtml(a.id)}" title="Remove account">✕</button>`}
+    </div>`;
+  };
+
+  // Per-person transfer cards
+  let xferHtml = '';
+  if(state.accounts.length && state.users.length){
+    const byPerson = transfersByPerson();
+    const { done } = transferPrefs();
+    const anyAssigned = state.users.some(u=> Object.keys(byPerson[u]).length);
+    if(anyAssigned){
+      xferHtml = `
+        <div class="block-head" style="margin:18px 0 8px;"><h3 style="font-size:14px;">Transfers by person</h3>
+          <span class="hint">Shared bills are split evenly; personal bills go to that person</span></div>
+        <div class="xfer-grid">
+          ${state.users.map((u,i)=>{
+            const freq = personTransferFreq(u), div = freq==='FORTNIGHTLY' ? 2 : 1, per = freq==='FORTNIGHTLY' ? 'fortnight' : 'month';
+            const lines = state.accounts.filter(a=> (byPerson[u][a.id]||0) > 0.004);
+            const total = lines.reduce((s,a)=> s + byPerson[u][a.id]/div, 0);
+            return `<div class="xfer-card">
+              <div class="xfer-head">
+                <span class="dot" style="background:${colorForPerson(u,i)}"></span>
+                <strong>${escapeHtml(u)}</strong>
+                <select data-xfer-freq="${escapeHtml(u)}" aria-label="How often ${escapeHtml(u)} transfers">
+                  <option value="FORTNIGHTLY" ${freq==='FORTNIGHTLY'?'selected':''}>Fortnightly</option>
+                  <option value="MONTHLY" ${freq==='MONTHLY'?'selected':''}>Monthly</option>
+                </select>
+              </div>
+              ${lines.length ? lines.map(a=>{
+                const k = doneKey(u, a.id), isDone = !!done[k];
+                return `<label class="xfer-line ${isDone?'done':''}">
+                  <input type="checkbox" data-xfer-done="${escapeHtml(k)}" ${isDone?'checked':''} aria-label="${escapeHtml(u)} transferred to ${escapeHtml(a.name)}">
+                  <span class="xfer-acc">${escapeHtml(a.name)}</span>
+                  <span class="num">${fmt(byPerson[u][a.id]/div, 2)}</span>
+                </label>`;}).join('')
+                : `<div class="empty" style="padding:4px 0;">Nothing to transfer.</div>`}
+              ${lines.length ? `<div class="xfer-total"><span>Total per ${per}</span><span class="num">${fmt(total, 2)}</span></div>` : ''}
+            </div>`;
+          }).join('')}
+        </div>`;
+    }
+  }
+
+  const unassigned = accountSummary('');
+  const anyDone = state.expenses.some(e=> e.actioned) || Object.values(transferPrefs().done).some(Boolean);
+  wrap.innerHTML = `
+    <div class="acct-panel">
+      <div class="block-head" style="margin-bottom:8px;"><h3>Bank accounts &amp; transfers</h3>
+        <span class="hint">Nominate an account for each bill, then tick bills off as they're paid or transferred</span></div>
+      ${state.accounts.length ? `
+        <div class="acct-row head"><span>Account</span><span class="details-col">Details</span><span class="num">Monthly</span><span class="prog">Actioned</span><span></span></div>
+        ${state.accounts.map(a=> row(a, accountSummary(a.id), false)).join('')}
+        ${unassigned.count ? row(null, unassigned, true) : ''}`
+      : `<div class="empty" style="padding:6px 0 0;">No accounts yet. Add one below, e.g. "Bills account" or "Mortgage offset".</div>`}
+      ${xferHtml}
+      ${state.accounts.length && !state.users.length ? `<p style="font-size:12px; color:var(--ink-soft); margin:12px 0 0;">Add people in Settings to see how much each person should transfer.</p>` : ''}
+      <div class="acct-actions">
+        <input type="text" id="newAccountInput" placeholder="New account name">
+        <button class="btn small ghost" id="addAccountBtn">+ Add account</button>
+        ${anyDone ? `<button class="btn small ghost" id="untickAllBtn" style="margin-left:auto;" title="Clear every Done and Transferred tick, e.g. at the start of a new pay cycle">Untick all</button>` : ''}
+      </div>
+    </div>`;
+
+  wrap.querySelectorAll('input[data-acc-id]').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      const acc = state.accounts.find(a=> a.id===inp.dataset.accId);
+      if(!acc) return;
+      const v = inp.value.trim();
+      if(inp.dataset.accField==='name'){ if(v) acc.name = v; }
+      else acc.details = v;
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-xfer-freq]').forEach(sel=>{
+    sel.addEventListener('change', ()=>{
+      const { freq, done } = transferPrefs();
+      setTransferPrefs(Object.assign({}, freq, { [sel.dataset.xferFreq]: sel.value }), done);
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-xfer-done]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const { freq, done } = transferPrefs();
+      const next = Object.assign({}, done);
+      if(cb.checked) next[cb.dataset.xferDone] = true; else delete next[cb.dataset.xferDone];
+      setTransferPrefs(freq, next);
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-del-acc]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.dataset.delAcc;
+      const acc = state.accounts.find(a=> a.id===id);
+      const n = state.expenses.filter(e=> e.account===id).length;
+      if(n && !confirm(`Remove "${acc ? acc.name : 'this account'}"? ${n} bill${n===1?'':'s'} nominated to it will become "not assigned".`)) return;
+      state.accounts = state.accounts.filter(a=> a.id!==id);
+      state.expenses.forEach(e=>{ if(e.account===id) e.account=''; });
+      const { freq, done } = transferPrefs();
+      const next = {}; Object.keys(done).forEach(k=>{ if(!k.endsWith('|'+id)) next[k] = done[k]; });
+      setTransferPrefs(freq, next);
+      saveState(); render();
+    });
+  });
+  const addAcc = ()=>{
+    const input = document.getElementById('newAccountInput');
+    const name = input.value.trim();
+    if(!name) return;
+    state.accounts.push({ id:newId(), name, details:'' });
+    saveState(); render();
+  };
+  document.getElementById('addAccountBtn').addEventListener('click', addAcc);
+  document.getElementById('newAccountInput').addEventListener('keydown', e=>{ if(e.key==='Enter') addAcc(); });
+  const untick = document.getElementById('untickAllBtn');
+  if(untick) untick.addEventListener('click', ()=>{
+    if(!confirm('Clear every Done and Transferred tick? Use this at the start of a new month or pay cycle.')) return;
+    state.expenses.forEach(e=>{ e.actioned = false; });
+    setTransferPrefs(transferPrefs().freq, {});
+    saveState(); render();
+  });
+}
+
+function renderExpenses(root){
+  root.innerHTML = `
+    <h2>Expenses</h2>
+    <p class="lede">Every bill and outgoing, grouped by category. Enter the amount at whatever frequency the bill actually arrives — the ledger converts it to a monthly figure automatically. Rename a category by editing its name; manage people and categories in Settings.</p>
+    <div id="accountsPanel"></div>
+    <div id="groups"></div>
+    <div class="add-inline" style="max-width:320px;">
+      <input type="text" id="newCatInput" placeholder="New category name">
+      <button class="btn small ghost" id="addCatBtn">+ Add category</button>
+    </div>
+  `;
+
+  renderAccountsPanel();
+
+  const totals = categoryTotals();
+  const cats = allCategories();
+  const orderedCats = [...cats].sort((a,b)=> (totals[b]||0)-(totals[a]||0));
+
+  const groupsEl = document.getElementById('groups');
+  if(orderedCats.length===0){
+    groupsEl.innerHTML = '<div class="empty">No categories yet. Add one below.</div>';
+  }
+
+  orderedCats.forEach(cat=>{
+    const items = state.expenses.filter(e=> (e.category||'UNSORTED').toUpperCase()===cat);
+    const group = document.createElement('div');
+    group.className = 'cat-group';
+    group.innerHTML = `
+      <div class="cat-group-head">
+        <span class="swatch" style="background:${colorFor(cat)}"></span>
+        <input type="text" class="cat-rename" data-oldname="${escapeHtml(cat)}" value="${escapeHtml(titleCase(cat))}"
+          style="border:none;background:transparent;font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:0.05em;width:220px;padding:3px 4px;border-radius:3px;">
+        <span class="total">${fmt(totals[cat]||0)} / mo</span>
+        <button class="icon-btn" data-delcat="${escapeHtml(cat)}" title="Remove category">✕</button>
+      </div>
+      <div class="exp-scroll"><table class="exp">
+        <thead><tr>
+          <th style="width:21%">Item</th>
+          <th style="width:11%">Who</th>
+          <th style="width:11%">Frequency</th>
+          <th style="width:12%">Amount</th>
+          <th style="width:11%">Monthly</th>
+          <th style="width:20%">Account</th>
+          <th style="width:7%; text-align:center;" title="Tick once this has been paid or transferred">Done</th>
+          <th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="add-row-bar">
+        <button class="btn small ghost" data-addto="${escapeHtml(cat)}">+ Add item to ${escapeHtml(titleCase(cat))}</button>
+      </div>
+    `;
+    const tbody = group.querySelector('tbody');
+    items.forEach(e=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="text" value="${escapeHtml(e.item)}" data-id="${e.id}" data-field="item"></td>
+        <td><select data-id="${e.id}" data-field="person">${whoOptions(e.person)}</select></td>
+        <td>
+          <select data-id="${e.id}" data-field="frequency">
+            <option value="MONTHLY" ${e.frequency==='MONTHLY'?'selected':''}>Monthly</option>
+            <option value="YEARLY" ${e.frequency==='YEARLY'?'selected':''}>Yearly</option>
+          </select>
+        </td>
+        <td><input class="amt" type="text" inputmode="decimal" step="0.01" value="${e.amount}" data-id="${e.id}" data-field="amount"></td>
+        <td class="amt">${fmt(monthlyOf(e), 2)}</td>
+        <td><select data-id="${e.id}" data-field="account">${accountOptions(e.account)}</select></td>
+        <td class="done-cell"><input type="checkbox" data-id="${e.id}" data-field="actioned" ${e.actioned?'checked':''} aria-label="Actioned"></td>
+        <td class="actions"><button class="icon-btn" data-del="${e.id}" title="Remove">✕</button></td>
+      `;
+      if(e.actioned) tr.classList.add('done');
+      tbody.appendChild(tr);
+    });
+    if(items.length===0){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td colspan="8" class="empty" style="padding:10px;">No items in this category yet.</td>`;
+      tbody.appendChild(tr);
+    }
+    groupsEl.appendChild(group);
+  });
+
+  groupsEl.querySelectorAll('table.exp input,table.exp select').forEach(el=>{
+    el.addEventListener('change', (ev)=>{
+      const id = ev.target.dataset.id, field = ev.target.dataset.field;
+      const exp = state.expenses.find(x=>x.id===id);
+      if(!exp) return;
+      if(field==='actioned') exp.actioned = ev.target.checked;
+      else exp[field] = field==='amount' ? parseFloat(ev.target.value)||0 : ev.target.value;
+      saveState();
+      render();
+    });
+  });
+  groupsEl.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.expenses = state.expenses.filter(x=> x.id !== btn.dataset.del);
+      syncDeleteRow('expenses', btn.dataset.del);
+      saveState(); render();
+    });
+  });
+  groupsEl.querySelectorAll('[data-addto]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.expenses.push({ id:newId(), category:btn.dataset.addto, item:'New item', person:'All', frequency:'MONTHLY', amount:0 });
+      saveState(); render();
+    });
+  });
+  groupsEl.querySelectorAll('.cat-rename').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      renameCategory(inp.dataset.oldname, inp.value.trim());
+    });
+  });
+  groupsEl.querySelectorAll('[data-delcat]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      deleteCategory(btn.dataset.delcat);
+    });
+  });
+
+  document.getElementById('addCatBtn').addEventListener('click', ()=>{
+    const input = document.getElementById('newCatInput');
+    const name = input.value.trim();
+    if(!name) return;
+    addCategory(name);
+  });
+}
+
+function addCategory(name){
+  name = name.toUpperCase();
+  if(!state.categories.includes(name)) state.categories.push(name);
+  colorFor(name);
+  saveState(); render();
+}
+function renameCategory(oldName, newName){
+  if(!newName || newName.toUpperCase()===oldName){ render(); return; }
+  newName = newName.toUpperCase();
+  state.categories = state.categories.map(c=> c===oldName ? newName : c);
+  if(!state.categories.includes(newName)) state.categories.push(newName);
+  state.expenses.forEach(e=>{ if((e.category||'').toUpperCase()===oldName) e.category = newName; });
+  state.actuals.forEach(a=>{ if((a.category||'').toUpperCase()===oldName) a.category = newName; });
+  if(CATEGORY_COLORS[oldName] && !CATEGORY_COLORS[newName]){
+    CATEGORY_COLORS[newName] = CATEGORY_COLORS[oldName];
+  }
+  if(state.categoryColors[oldName] && !state.categoryColors[newName]){
+    state.categoryColors[newName] = state.categoryColors[oldName];
+    delete state.categoryColors[oldName];
+  }
+  saveState(); render();
+}
+function deleteCategory(name){
+  const expCount = state.expenses.filter(e=> (e.category||'').toUpperCase()===name).length;
+  if(expCount > 0){
+    alert(`"${titleCase(name)}" still has ${expCount} budgeted item(s). Move or remove them first.`);
+    return;
+  }
+  const actualCount = state.actuals.filter(a=> (a.category||'').toUpperCase()===name).length;
+  if(actualCount > 0){
+    if(!confirm(`"${titleCase(name)}" has ${actualCount} actual entr${actualCount===1?'y':'ies'}. Move ${actualCount===1?'it':'them'} to "Unsorted" and delete the category?`)) return;
+    if(!state.categories.includes('UNSORTED')) state.categories.push('UNSORTED');
+    state.actuals.forEach(a=>{ if((a.category||'').toUpperCase()===name) a.category = 'UNSORTED'; });
+  }
+  state.categories = state.categories.filter(c=> c!==name);
+  delete state.categoryColors[name];
+  saveState(); render();
+}
+function setCategoryColor(name, hex){
+  state.categoryColors[name] = hex;
+  saveState(); render();
+}
+function resetCategoryColor(name){
+  delete state.categoryColors[name];
+  saveState(); render();
+}
+
+/* ============================= ACTUAL VS BUDGET ============================= */
+
+function totalActualForCategory(cat){
+  return state.actuals.filter(a=> (a.category||'').toUpperCase()===cat).reduce((s,a)=> s+(Number(a.amount)||0), 0);
+}
+function totalActual(){
+  return state.actuals.reduce((s,a)=> s+(Number(a.amount)||0), 0);
+}
+function allActualCategories(){
+  const derived = Array.from(new Set(state.actuals.map(a=> (a.category||'UNSORTED').toUpperCase())));
+  return Array.from(new Set([...allCategories(), ...derived]));
+}
+
+function renderActual(root){
+  const budgetedTotal = totalMonthlyExpenses();
+  const actualTotal = totalActual();
+  const variance = actualTotal - budgetedTotal;
+
+  root.innerHTML = `
+    <h2>Actual vs budget</h2>
+    <p class="lede">Track what you actually spent against what you budgeted. Type into the grid like a spreadsheet, paste rows straight from Excel, or import a bank statement export.</p>
+
+    <div class="bva-summary">
+      <div class="mini-card"><div class="label">Budgeted</div><div class="value">${fmt(budgetedTotal)}</div></div>
+      <div class="mini-card"><div class="label">Actual</div><div class="value">${fmt(actualTotal)}</div></div>
+      <div class="mini-card"><div class="label">Variance</div><div class="value" style="color:${variance>0? resolveVar('var(--warn)') : resolveVar('var(--good)')}">${variance>0?'+':''}${fmt(variance)}</div></div>
+    </div>
+
+    <div class="block-head"><h3>Import</h3></div>
+    <div class="io-grid" style="grid-template-columns:1fr;">
+      <div class="io-card">
+        <h4>Import bank statement</h4>
+        <p>Upload an .xlsx/.csv export from your bank. Transactions come in as "Unsorted" — assign categories in the grid below.</p>
+        <input type="file" id="bankImportFile" accept=".xlsx,.xls,.csv">
+      </div>
+    </div>
+    <div class="io-status" id="actualIoStatus"></div>
+
+    <div class="block-head" style="margin-top:28px;"><h3>By category</h3><span class="hint">Dark tick marks the budgeted amount</span></div>
+    <div id="bvaTable"></div>
+
+    <div class="block-head" style="margin-top:28px;"><h3>Actual entries</h3><span class="hint">Click any cell to edit — works like a spreadsheet</span></div>
+    <div id="actualEntries"></div>
+
+    <div class="paste-zone">
+      <div class="block-head"><h3>Paste from a spreadsheet</h3><span class="hint">Category, Description, Amount — one transaction per line, tab or comma separated</span></div>
+      <textarea id="pasteArea" placeholder="Groceries&#9;Woolworths&#9;85.40&#10;Bills&#9;Electricity&#9;150"></textarea>
+      <button class="btn small ghost" id="pasteAddBtn" style="margin-top:8px;">Add pasted rows</button>
+    </div>
+  `;
+
+  renderBvaTable();
+  renderActualEntries();
+
+  document.getElementById('bankImportFile').addEventListener('change', (ev)=>{
+    const file = ev.target.files[0];
+    if(file) importBankStatement(file);
+    ev.target.value = '';
+  });
+  document.getElementById('pasteAddBtn').addEventListener('click', ()=>{
+    const text = document.getElementById('pasteArea').value;
+    addPastedActualRows(text);
+  });
+}
+
+function addPastedActualRows(text){
+  if(!text || !text.trim()){ actualIoStatus('Paste some rows first.', true); return; }
+  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  let added = 0;
+  lines.forEach(line=>{
+    const parts = line.includes('\t') ? line.split('\t') : line.split(',');
+    let category, item, amount;
+    if(parts.length >= 3){
+      [category, item, amount] = parts;
+    } else if(parts.length === 2){
+      category = 'UNSORTED'; [item, amount] = parts;
+    } else {
+      return; // not enough info to make sense of this line
+    }
+    category = String(category||'Unsorted').trim().toUpperCase() || 'UNSORTED';
+    item = String(item||'').trim();
+    const amt = parseFloat(String(amount||'').replace(/[^0-9.\-]/g,'')) || 0;
+    if(!item) return;
+    if(!state.categories.includes(category)) state.categories.push(category);
+    state.actuals.push({ id:newId(), category, item, amount:amt });
+    added++;
+  });
+  if(added===0){ actualIoStatus('Could not find any usable rows in that paste.', true); return; }
+  saveState(); render();
+  actualIoStatus(`Added ${added} pasted row${added===1?'':'s'}.`, false);
+}
+
+function renderBvaTable(){
+  const wrap = document.getElementById('bvaTable');
+  const cats = allActualCategories();
+  const budgetTotals = categoryTotals();
+  const maxVal = Math.max(1, ...cats.map(c=> Math.max(budgetTotals[c]||0, totalActualForCategory(c))));
+
+  if(cats.length===0){ wrap.innerHTML = '<div class="empty">No categories yet.</div>'; return; }
+
+  wrap.innerHTML = cats.map(c=>{
+    const budgeted = budgetTotals[c]||0;
+    const actual = totalActualForCategory(c);
+    const variance = actual - budgeted;
+    const fillPct = Math.min(100, (actual/maxVal)*100);
+    const budgetPct = Math.min(100, (budgeted/maxVal)*100);
+    return `<div class="bva-row">
+      <span class="cat-name">${escapeHtml(titleCase(c))}</span>
+      <div class="bva-track">
+        <div class="bva-fill" style="width:${fillPct}%; background:${colorFor(c)}"></div>
+        <div class="bva-budget-mark" style="left:${budgetPct}%"></div>
+      </div>
+      <span class="amt">${fmt(budgeted)}</span>
+      <span class="amt">${fmt(actual)}</span>
+      <span class="amt variance ${variance>0?'over':'under'}">${variance>0?'+':''}${fmt(variance)}</span>
+      <button class="icon-btn" data-delbvacat="${escapeHtml(c)}" title="Delete category">✕</button>
+    </div>`;
+  }).join('');
+
+  wrap.querySelectorAll('[data-delbvacat]').forEach(btn=>{
+    btn.addEventListener('click', ()=> deleteCategory(btn.dataset.delbvacat));
+  });
+}
+
+let actualEditingNewCatId = null;
+
+function renderActualEntries(){
+  const wrap = document.getElementById('actualEntries');
+  const cats = allActualCategories();
+  const sorted = [...state.actuals].sort((a,b)=> monthlyOfActual(b)-monthlyOfActual(a));
+
+  const table = document.createElement('div');
+  table.className = 'sheet-wrap';
+  const tbl = document.createElement('table');
+  tbl.className = 'sheet';
+  tbl.innerHTML = `
+    <thead><tr>
+      <th style="width:34px;"></th>
+      <th style="width:22%">Category</th>
+      <th style="width:44%">Description</th>
+      <th style="width:18%">Amount</th>
+      <th style="width:36px;"></th>
+    </tr></thead>
+    <tbody></tbody>
+  `;
+  const tbody = tbl.querySelector('tbody');
+
+  if(sorted.length===0){
+    tbody.innerHTML = `<tr><td colspan="5" class="empty" style="padding:14px;">No actual entries yet — add a row below, paste from a spreadsheet, or import a bank statement.</td></tr>`;
+  }
+
+  sorted.forEach((a,i)=>{
+    const tr = document.createElement('tr');
+    const catCell = (a.id === actualEditingNewCatId)
+      ? `<input type="text" data-id="${a.id}" data-field="__newcat" placeholder="New category name" autofocus>`
+      : `<select data-id="${a.id}" data-field="category">
+          ${cats.map(c=> `<option value="${escapeHtml(c)}" ${((a.category||'').toUpperCase()===c)?'selected':''}>${escapeHtml(titleCase(c))}</option>`).join('')}
+          <option value="__new__">+ New category…</option>
+        </select>`;
+    tr.innerHTML = `
+      <td class="rownum">${i+1}</td>
+      <td>${catCell}</td>
+      <td><input type="text" value="${escapeHtml(a.item)}" data-id="${a.id}" data-field="item"></td>
+      <td><input class="amt" type="text" inputmode="decimal" step="0.01" value="${a.amount}" data-id="${a.id}" data-field="amount"></td>
+      <td class="actions-cell"><button class="icon-btn" data-delactual="${a.id}" title="Remove">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  const addRow = document.createElement('div');
+  addRow.className = 'sheet-addrow';
+  addRow.id = 'sheetAddRow';
+  addRow.innerHTML = `<span class="plus">+</span> Add row`;
+
+  table.appendChild(tbl);
+  wrap.innerHTML = '';
+  wrap.appendChild(table);
+  wrap.appendChild(addRow);
+
+  addRow.addEventListener('click', ()=>{
+    const cat = allActualCategories()[0] || 'UNSORTED';
+    const entry = { id:newId(), category:cat, item:'', amount:0 };
+    state.actuals.push(entry);
+    saveState(); render();
+    setTimeout(()=>{
+      const wrap2 = document.getElementById('actualEntries');
+      const input = wrap2 && wrap2.querySelector(`input[data-id="${entry.id}"][data-field="item"]`);
+      if(input) input.focus();
+    }, 30);
+  });
+
+  wrap.querySelectorAll('input,select').forEach(el=>{
+    el.addEventListener('change', (ev)=>{
+      const id = ev.target.dataset.id, field = ev.target.dataset.field;
+      const entry = state.actuals.find(x=>x.id===id);
+      if(!entry) return;
+
+      if(field==='category' && ev.target.value==='__new__'){
+        actualEditingNewCatId = id;
+        render();
+        setTimeout(()=>{
+          const wrap2 = document.getElementById('actualEntries');
+          const input = wrap2 && wrap2.querySelector(`input[data-field="__newcat"][data-id="${id}"]`);
+          if(input) input.focus();
+        }, 30);
+        return;
+      }
+      if(field==='__newcat'){
+        const name = ev.target.value.trim();
+        actualEditingNewCatId = null;
+        if(name){
+          const cat = name.toUpperCase();
+          if(!state.categories.includes(cat)) state.categories.push(cat);
+          entry.category = cat;
+        }
+        saveState(); render();
+        return;
+      }
+      entry[field] = field==='amount' ? (parseFloat(ev.target.value)||0) : ev.target.value;
+      saveState(); render();
+    });
+  });
+
+  // Escape cancels the inline new-category editor without committing
+  wrap.querySelectorAll('input[data-field="__newcat"]').forEach(inp=>{
+    inp.addEventListener('keydown', (ev)=>{
+      if(ev.key === 'Escape'){ actualEditingNewCatId = null; render(); }
+    });
+  });
+
+  wrap.querySelectorAll('[data-delactual]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.actuals = state.actuals.filter(x=> x.id!==btn.dataset.delactual);
+      syncDeleteRow('actuals', btn.dataset.delactual);
+      saveState(); render();
+    });
+  });
+}
+function monthlyOfActual(a){ return Number(a.amount)||0; }
+
+function actualIoStatus(msg, isError){
+  const el = document.getElementById('actualIoStatus');
+  if(!el) return;
+  el.textContent = msg;
+  el.className = 'io-status show ' + (isError ? 'err' : 'ok');
+}
+
+function bankLooksLikeDate(v){
+  if(v===''||v===null||v===undefined) return false;
+  if(typeof v === 'number') return Number.isInteger(v) && v > 20000 && v < 60000; // plausible Excel date serial
+  const s = String(v).trim();
+  return /^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$/.test(s) || /^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$/.test(s);
+}
+function bankLooksLikeAmount(v){
+  if(v===''||v===null||v===undefined) return false;
+  if(typeof v === 'number') return true;
+  const s = String(v).trim().replace(/[$,]/g,'');
+  return /^-?\d+(\.\d+)?$/.test(s);
+}
+function bankIsBlankRow(row){
+  return !row || row.every(c=> String(c===null||c===undefined?'':c).trim()==='');
+}
+function bankNumOf(v){
+  return typeof v === 'number' ? v : parseFloat(String(v||'').replace(/[$,]/g,''));
+}
+
+function parseBankWorkbook(wb){
+  const sheetName = wb.SheetNames[0];
+  let rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header:1, defval:'' });
+  rows = rows.filter(r=> !bankIsBlankRow(r));
+  if(rows.length===0) return [];
+
+  // Some banks export a proper header row (Date, Description, Credit, Debit, Balance…);
+  // others (ANZ, Bendigo) export raw rows with no header at all. Detect which we've got.
+  const headerKeywords = /^(date|description|narrative|details|merchant|payee|memo|transaction|amount|debit|credit|balance|reference|account)/i;
+  const firstRow = rows[0];
+  const headerMatchCount = firstRow.filter(c=> typeof c === 'string' && headerKeywords.test(c.trim())).length;
+  const looksLikeHeader = headerMatchCount >= 2 && !bankLooksLikeDate(firstRow[0]);
+
+  let dataRows, header;
+  if(looksLikeHeader){
+    header = firstRow.map(h=> String(h||'').toLowerCase().trim());
+    dataRows = rows.slice(1);
+  } else {
+    header = null;
+    dataRows = rows;
+  }
+  dataRows = dataRows.filter(r=> !bankIsBlankRow(r));
+  if(dataRows.length===0) return [];
+
+  let dateIdx=-1, descIdx=null, amountIdx=-1, debitIdx=-1;
+
+  if(header){
+    // Named-column format (e.g. ING: Date, Description, Credit, Debit, Balance)
+    dateIdx = header.findIndex(h=> /date/.test(h));
+    descIdx = header.findIndex(h=> /(description|narrative|details|merchant|payee|memo|transaction)/.test(h));
+    debitIdx = header.findIndex(h=> /debit/.test(h));
+    amountIdx = header.findIndex(h=> h==='amount' || (/amount/.test(h) && !/debit|credit/.test(h)));
+  } else {
+    // No header — sniff column roles from the data itself (e.g. ANZ, Bendigo exports)
+    const sampleSize = Math.min(dataRows.length, 8);
+    const colCount = Math.max(...dataRows.map(r=>r.length));
+    const dateScore = new Array(colCount).fill(0);
+    for(let c=0;c<colCount;c++){
+      for(let i=0;i<sampleSize;i++){ if(bankLooksLikeDate(dataRows[i][c])) dateScore[c]++; }
+    }
+    dateIdx = dateScore.indexOf(Math.max(...dateScore));
+    if(dateScore[dateIdx]===0) dateIdx = -1;
+
+    // The amount column is numeric like several others might be (account/reference numbers),
+    // so prefer whichever numeric column actually has negative and/or decimal values.
+    const amountScore = new Array(colCount).fill(0);
+    const hasNeg = new Array(colCount).fill(false);
+    const hasDec = new Array(colCount).fill(false);
+    for(let c=0;c<colCount;c++){
+      if(c===dateIdx) continue;
+      for(let i=0;i<sampleSize;i++){
+        const v = dataRows[i][c];
+        if(bankLooksLikeAmount(v)){
+          amountScore[c]++;
+          const n = bankNumOf(v);
+          if(n<0) hasNeg[c]=true;
+          if(!Number.isInteger(n)) hasDec[c]=true;
+        }
+      }
+    }
+    let best=-1, bestWeight=-1;
+    for(let c=0;c<colCount;c++){
+      if(c===dateIdx || amountScore[c] < sampleSize*0.5) continue;
+      const w = amountScore[c] + (hasNeg[c]?100:0) + (hasDec[c]?10:0);
+      if(w>bestWeight){ bestWeight=w; best=c; }
+    }
+    amountIdx = best;
+    descIdx = null; // built from remaining columns below
+  }
+
+  function isConstantCol(c){
+    const vals = new Set(dataRows.map(r=> String(r[c]===null||r[c]===undefined?'':r[c]).trim()));
+    return vals.size <= 1;
+  }
+
+  // If a named "Amount" column (no separate Debit/Credit) never contains a negative
+  // value across the whole file, it can't be using the "negative = spend" convention —
+  // some banks list spend as plain positive numbers in a generic Amount column. Without
+  // this, every row would be silently skipped and the import would report zero rows
+  // with no indication why.
+  let amountColumnIsPositiveOnly = false;
+  if(header && debitIdx<0 && amountIdx>=0){
+    amountColumnIsPositiveOnly = dataRows.every(row=>{
+      const v = bankNumOf(row[amountIdx]);
+      return isNaN(v) || v >= 0;
+    });
+  }
+
+  const entries = [];
+  dataRows.forEach((row,i)=>{
+    let amt = 0;
+    if(debitIdx>=0 && row[debitIdx]!==''){
+      amt = Math.abs(bankNumOf(row[debitIdx])||0);
+    } else if(amountIdx!==null && amountIdx>=0){
+      const v = bankNumOf(row[amountIdx]);
+      if(!isNaN(v)){
+        if(v<0) amt = Math.abs(v);
+        else if(amountColumnIsPositiveOnly) amt = v;
+      }
+    }
+    if(amt<=0) return; // credits/deposits aren't spending — skip them
+
+    let desc;
+    if(descIdx!==null && descIdx>=0){
+      desc = String(row[descIdx]||'').trim();
+    } else {
+      // No named description column — stitch together whatever's left after removing
+      // the date, the amount, and any column that's identical on every row (account numbers etc.)
+      const parts = row.map((v,ci)=>{
+        if(ci===dateIdx || ci===amountIdx || isConstantCol(ci)) return null;
+        const s = String(v===null||v===undefined?'':v).trim();
+        return s || null;
+      }).filter(Boolean);
+      desc = parts.join(' ').replace(/\s+/g,' ').trim();
+    }
+    entries.push({ desc: desc || ('Transaction '+(i+1)), amount: Math.round(amt*100)/100 });
+  });
+  return entries;
+}
+
+function importBankStatement(file){
+  if(typeof XLSX === 'undefined'){
+    actualIoStatus('Could not load the Excel library — check your internet connection and try again.', true);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onerror = ()=> actualIoStatus('Could not read that file.', true);
+  reader.onload = (ev)=>{
+    let wb;
+    try{ wb = XLSX.read(new Uint8Array(ev.target.result), { type:'array' }); }
+    catch(err){ actualIoStatus('That file does not look like a valid spreadsheet.', true); return; }
+
+    const entries = parseBankWorkbook(wb);
+    if(entries.length===0){
+      actualIoStatus('No transactions detected. This works best with a Date + Description + Amount (or Debit/Credit) export.', true);
+      return;
+    }
+    if(!state.categories.includes('UNSORTED')) state.categories.push('UNSORTED');
+    entries.forEach(en=> state.actuals.push({ id:newId(), category:'UNSORTED', item:en.desc, amount:en.amount }));
+    saveState(); render();
+    actualIoStatus(`Imported ${entries.length} transaction(s) as Unsorted — assign categories in the table below.`, false);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ============================= INCOME ============================= */
+
+// Each earner has their own pay frequency, so a household can mix fortnightly and
+// monthly pay. Monthly income is a straight sum, with no averaging over a year:
+//   fortnightly pay x 2 (two pays a month) + monthly pay x 1.
+// The two "third pay" months a fortnightly earner gets each year aren't counted in
+// the monthly budget; they arrive as extra. The yearly total counts actual pays.
+// Each earner's pay is stored as that monthly figure (p.monthly), which everything
+// else in the app uses; the amount actually paid is derived back from it.
+const PAYS_PER_MONTH = { FORTNIGHTLY: 2, MONTHLY: 1 };
+const PAYS_PER_YEAR  = { FORTNIGHTLY: 26, MONTHLY: 12 };
+function earnerFreq(p){ return (p && PAYS_PER_MONTH[p.frequency]) ? p.frequency : 'FORTNIGHTLY'; }
+function earnerPayAmount(p){ return (Number(p.monthly)||0) / PAYS_PER_MONTH[earnerFreq(p)]; }
+function earnerYearly(p){ return earnerPayAmount(p) * PAYS_PER_YEAR[earnerFreq(p)]; }
+function totalYearlyIncome(){ return state.income.earners.reduce((s,p)=> s + earnerYearly(p), 0); }
+function anyFortnightlyEarner(){ return state.income.earners.some(p=> earnerFreq(p)==='FORTNIGHTLY'); }
+
+function renderIncome(root){
+  root.innerHTML = `
+    <h2>Income</h2>
+    <p class="lede">Add each person's pay and how often they're paid. The monthly figure is a straight sum: fortnightly pay counts as two pays a month, monthly pay as one.</p>
+
+    <div class="block-head" style="margin-top:8px;"><h3>Earners</h3></div>
+    <div class="earner-row head"><span>Name</span><span>Paid</span><span class="num">Amount per pay</span><span class="num pm">Per month</span><span></span></div>
+    <div id="earnerList"></div>
+    <button class="btn small ghost" id="addEarner" style="margin-top:10px;">+ Add earner</button>
+
+    <div class="income-summary">
+      <div class="mini-card"><div class="label">Monthly total</div><div class="value" id="incMonthly">$0</div></div>
+      <div class="mini-card"><div class="label">Yearly total</div><div class="value" id="incYearly">$0</div></div>
+    </div>
+    <p id="incNote" style="font-size:12.5px; color:var(--ink-soft); margin:10px 0 0; max-width:62ch;"></p>
+  `;
+
+  const list = document.getElementById('earnerList');
+  state.income.earners.forEach(p=>{
+    const f = earnerFreq(p);
+    const row = document.createElement('div');
+    row.className = 'earner-row';
+    row.innerHTML = `
+      <input type="text" value="${escapeHtml(p.name)}" data-id="${p.id}" data-field="name" placeholder="Name" aria-label="Name">
+      <select data-id="${p.id}" data-field="frequency" aria-label="How often ${escapeHtml(p.name)} is paid">
+        <option value="FORTNIGHTLY" ${f==='FORTNIGHTLY'?'selected':''}>Fortnightly</option>
+        <option value="MONTHLY" ${f==='MONTHLY'?'selected':''}>Monthly</option>
+      </select>
+      <input type="text" inputmode="decimal" value="${earnerPayAmount(p).toFixed(2)}" data-id="${p.id}" data-field="amount" aria-label="Amount per pay">
+      <span class="num pm">${fmt(Number(p.monthly)||0)}</span>
+      <button class="icon-btn" data-del="${p.id}" title="Remove">✕</button>
+    `;
+    list.appendChild(row);
+  });
+  if(state.income.earners.length===0) list.innerHTML = '<div class="empty">No earners added yet.</div>';
+
+  list.querySelectorAll('input,select').forEach(el=>{
+    el.addEventListener('change', (ev)=>{
+      const id = ev.target.dataset.id, field = ev.target.dataset.field;
+      const p = state.income.earners.find(x=>x.id===id);
+      if(!p) return;
+      if(field==='name') p.name = ev.target.value;
+      else if(field==='frequency'){
+        // Keep the amount per pay the same and change how often it arrives,
+        // e.g. $3,000 fortnightly -> $3,000 monthly.
+        const pay = earnerPayAmount(p);
+        p.frequency = ev.target.value;
+        p.monthly = pay * PAYS_PER_MONTH[earnerFreq(p)];
+      } else {
+        const val = Math.max(0, parseFloat(ev.target.value)||0);
+        p.monthly = val * PAYS_PER_MONTH[earnerFreq(p)];
+      }
+      saveState(); render();
+    });
+  });
+  list.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.income.earners = state.income.earners.filter(x=>x.id!==btn.dataset.del);
+      syncDeleteRow('earners', btn.dataset.del);
+      saveState(); render();
+    });
+  });
+
+  document.getElementById('addEarner').addEventListener('click', ()=>{
+    state.income.earners.push({ id:newId(), name:'New earner', monthly:0, frequency:'FORTNIGHTLY' });
+    saveState(); render();
+  });
+
+  const monthly = totalMonthlyIncome(), yearly = totalYearlyIncome();
+  document.getElementById('incMonthly').textContent = fmt(monthly);
+  document.getElementById('incYearly').textContent = fmt(yearly);
+  const extra = yearly - monthly*12;
+  document.getElementById('incNote').textContent = extra > 0.005
+    ? `The yearly total is ${fmt(extra)} more than 12 × the monthly total. That's the two extra fortnightly pays each year (months with three pays), which aren't counted in the monthly budget.`
+    : '';
+}
+
+/* ============================= SAVINGS ============================= */
+
+// A goal's split is stored as { personName: percent }. No stored split (or one that
+// doesn't mention anyone currently in the household) means "split evenly".
+function bucketSplit(b){
+  const users = state.users;
+  if(!users.length) return {};
+  const stored = b.split || {};
+  const custom = users.some(u=> stored[u] !== undefined);
+  const out = {};
+  users.forEach(u=>{ out[u] = custom ? (Number(stored[u])||0) : 100/users.length; });
+  return out;
+}
+function isCustomSplit(b){ return state.users.some(u=> b.split && b.split[u] !== undefined); }
+function savingsByPerson(){
+  const totals = {}; state.users.forEach(u=> totals[u]=0);
+  let unallocated = 0;
+  state.savings.buckets.forEach(b=>{
+    const split = bucketSplit(b);
+    let pctSum = 0;
+    state.users.forEach(u=>{ totals[u] += (Number(b.monthly)||0) * split[u] / 100; pctSum += split[u]; });
+    unallocated += (Number(b.monthly)||0) * Math.max(0, 100 - pctSum) / 100;
+  });
+  return { totals, unallocated };
+}
+function fmtPct(n){ return (Math.round(n*10)/10).toString(); }
+
+function splitRowHtml(b){
+  if(!state.users.length){
+    return `<div class="split-row"><span class="split-label">Split</span><span style="color:var(--ink-soft);">Add people in Settings to split this goal between them.</span></div>`;
+  }
+  const split = bucketSplit(b);
+  const total = state.users.reduce((s,u)=> s + split[u], 0);
+  const people = state.users.map((u,i)=> `
+    <span class="split-person">
+      <span class="dot" style="background:${colorForPerson(u,i)}"></span>
+      <span>${escapeHtml(u)}</span>
+      <input class="split-pct" type="text" inputmode="decimal" value="${fmtPct(split[u])}" data-id="${escapeHtml(b.id)}" data-person="${escapeHtml(u)}" aria-label="${escapeHtml(u)} share in percent">%
+      <span class="amt">${fmt((Number(b.monthly)||0) * split[u] / 100)}/mo</span>
+    </span>`).join('');
+  const warn = Math.abs(total-100) > 0.05 ? `<span class="split-warn">Adds up to ${fmtPct(total)}%, not 100%</span>` : '';
+  const even = isCustomSplit(b) ? `<button class="split-even" data-split-even="${escapeHtml(b.id)}">Split evenly</button>` : '';
+  return `<div class="split-row"><span class="split-label">Split</span>${people}${warn}${even}</div>`;
+}
+
+function renderSavings(root){
+  const totalMonthly = totalMonthlySavings();
+  const left = leftover();
+  root.innerHTML = `
+    <h2>Savings</h2>
+    <p class="lede">Set a target and a monthly contribution for each savings goal. The forecast tab projects how long each will take to fill.</p>
+
+    <div id="bucketList"></div>
+    <button class="btn small ghost" id="addBucket">+ Add savings goal</button>
+
+    <div id="savingsByPerson"></div>
+
+    <div class="income-summary" style="margin-top:26px;">
+      <div class="mini-card"><div class="label">Total monthly savings</div><div class="value">${fmt(totalMonthly)}</div></div>
+      <div class="mini-card"><div class="label">Income after bills</div><div class="value">${fmt(totalMonthlyIncome()-totalMonthlyExpenses())}</div></div>
+      <div class="mini-card"><div class="label">Left over after savings</div>
+        <div class="value" style="color:${left<0? resolveVar('var(--warn)') : resolveVar('var(--good)')}">${fmt(left)}</div>
+      </div>
+    </div>
+  `;
+
+  const list = document.getElementById('bucketList');
+  state.savings.buckets.forEach(b=>{
+    const progressPct = b.target>0 ? Math.min(100, (b.start/b.target)*100) : 0;
+    const div = document.createElement('div');
+    div.className = 'bucket';
+    div.innerHTML = `
+      <div class="bucket-top">
+        <div class="field"><label>Goal name</label><input type="text" value="${escapeHtml(b.name)}" data-id="${b.id}" data-field="name"></div>
+        <div class="field"><label>Target ($)</label><input type="text" inputmode="decimal" step="1" value="${b.target}" data-id="${b.id}" data-field="target"></div>
+        <div class="field"><label>Monthly contribution ($)</label><input type="text" inputmode="decimal" step="1" value="${b.monthly}" data-id="${b.id}" data-field="monthly"></div>
+        <button class="icon-btn" data-del="${b.id}" title="Remove">✕</button>
+      </div>
+      <div class="progress-track"><div class="progress-fill" style="width:${progressPct}%; background:${colorFor('__savings__') , resolveVar('var(--savings)')}"></div></div>
+      <div class="bucket-foot">
+        <span>${fmt(b.start)} saved of ${fmt(b.target)}</span>
+        <span>${b.monthly>0 && b.target>b.start ? Math.ceil((b.target-b.start)/b.monthly) + ' months to go' : (b.target<=b.start ? 'Goal reached' : 'No contribution set')}</span>
+      </div>
+      ${splitRowHtml(b)}
+    `;
+    list.appendChild(div);
+  });
+  if(state.savings.buckets.length===0) list.innerHTML = '<div class="empty">No savings goals yet.</div>';
+
+  list.querySelectorAll('input.split-pct').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      const b = state.savings.buckets.find(x=> x.id===el.dataset.id);
+      if(!b) return;
+      const split = bucketSplit(b);
+      const person = el.dataset.person;
+      const v = Math.max(0, Math.min(100, parseFloat(el.value)||0));
+      split[person] = v;
+      // With two people, keep the pair adding up to 100% automatically.
+      if(state.users.length===2){
+        const other = state.users.find(u=> u!==person);
+        split[other] = 100 - v;
+      }
+      b.split = split;
+      saveState(); render();
+    });
+  });
+  list.querySelectorAll('[data-split-even]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const b = state.savings.buckets.find(x=> x.id===btn.dataset.splitEven);
+      if(!b) return;
+      b.split = {};
+      saveState(); render();
+    });
+  });
+
+  const byPerson = document.getElementById('savingsByPerson');
+  if(state.users.length && state.savings.buckets.length){
+    const { totals, unallocated } = savingsByPerson();
+    byPerson.innerHTML = `
+      <div class="block-head" style="margin-top:26px;"><h3>Monthly savings by person</h3></div>
+      <div class="income-summary" style="margin-top:0;">
+        ${state.users.map((u,i)=> `<div class="mini-card"><div class="label">${escapeHtml(u)}</div><div class="value">${fmt(totals[u])}</div></div>`).join('')}
+        ${unallocated > 0.004 ? `<div class="mini-card"><div class="label">Not allocated</div><div class="value" style="color:var(--warn)">${fmt(unallocated)}</div></div>` : ''}
+      </div>`;
+  }
+
+  list.querySelectorAll('input:not(.split-pct)').forEach(el=>{
+    el.addEventListener('change', (ev)=>{
+      const id = ev.target.dataset.id, field = ev.target.dataset.field;
+      const b = state.savings.buckets.find(x=>x.id===id);
+      if(!b) return;
+      b[field] = field==='name' ? ev.target.value : (parseFloat(ev.target.value)||0);
+      saveState(); render();
+    });
+  });
+  list.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      state.savings.buckets = state.savings.buckets.filter(x=>x.id!==btn.dataset.del);
+      syncDeleteRow('savings_buckets', btn.dataset.del);
+      saveState(); render();
+    });
+  });
+  document.getElementById('addBucket').addEventListener('click', ()=>{
+    state.savings.buckets.push({ id:newId(), name:'New goal', target:1000, start:0, monthly:50 });
+    saveState(); render();
+  });
+}
+
+/* ============================= FORECAST ============================= */
+
+function runForecast(){
+  const months = state.forecast.months;
+  const incGrowthMonthly = Math.pow(1 + state.forecast.incomeGrowth/100, 1/12);
+  const expInflMonthly = Math.pow(1 + state.forecast.expenseInflation/100, 1/12);
+
+  let income = totalMonthlyIncome();
+  let expenses = totalMonthlyExpenses();
+  const bucketState = state.savings.buckets.map(b=> ({...b, balance: b.start}));
+
+  const points = [];
+  let cashBuffer = 0;
+  for(let m=0; m<=months; m++){
+    if(m>0){
+      income *= incGrowthMonthly;
+      expenses *= expInflMonthly;
+      let remaining = income - expenses;
+      bucketState.forEach(b=>{
+        if(b.balance < b.target){
+          const room = b.target - b.balance;
+          const contrib = Math.min(b.monthly, Math.max(room,0));
+          b.balance += contrib;
+          remaining -= contrib;
+        }
+      });
+      cashBuffer += remaining;
+    }
+    const totalSavingsBalance = bucketState.reduce((s,b)=> s+b.balance, 0);
+    points.push({ month:m, income, expenses, savingsBalance: totalSavingsBalance, buffer: cashBuffer });
+  }
+  return { points, bucketState };
+}
+
+function renderForecast(root){
+  root.innerHTML = `
+    <h2>Forecast</h2>
+    <p class="lede">Project the next few years forward using current income, expenses and savings contributions, with optional yearly growth and inflation assumptions.</p>
+
+    <div class="forecast-controls">
+      <div class="fc-field">
+        <label>Time horizon</label>
+        <input type="range" id="fcMonths" min="3" max="60" value="${state.forecast.months}">
+        <div class="fc-val" id="fcMonthsVal">${state.forecast.months} months</div>
+      </div>
+      <div class="fc-field">
+        <label>Annual income growth</label>
+        <input type="text" inputmode="decimal" id="fcIncomeGrowth" step="0.5" value="${state.forecast.incomeGrowth}">
+        <div class="fc-val">% per year</div>
+      </div>
+      <div class="fc-field">
+        <label>Annual expense inflation</label>
+        <input type="text" inputmode="decimal" id="fcInflation" step="0.5" value="${state.forecast.expenseInflation}">
+        <div class="fc-val">% per year</div>
+      </div>
+    </div>
+
+    <div class="block-head"><h3>Combined savings balance</h3><span class="hint" id="fcEndNote"></span></div>
+    <div class="chart-wrap" id="lineChart"></div>
+
+    <div class="block-head" style="margin-top:26px;"><h3>Monthly cash flow</h3><span class="hint">Income vs. expenses + savings contributions</span></div>
+    <div class="chart-wrap" id="flowChart"></div>
+
+    <div class="block-head" style="margin-top:26px;"><h3>Goal ETAs at this pace</h3></div>
+    <table class="top-items" id="etaTable"></table>
+  `;
+
+  const monthsInput = document.getElementById('fcMonths');
+  monthsInput.addEventListener('input', ()=>{
+    state.forecast.months = parseInt(monthsInput.value);
+    document.getElementById('fcMonthsVal').textContent = state.forecast.months + ' months';
+    saveState();
+    updateForecastCharts();
+  });
+  document.getElementById('fcIncomeGrowth').addEventListener('change', (e)=>{
+    state.forecast.incomeGrowth = parseFloat(e.target.value)||0;
+    saveState(); updateForecastCharts();
+  });
+  document.getElementById('fcInflation').addEventListener('change', (e)=>{
+    state.forecast.expenseInflation = parseFloat(e.target.value)||0;
+    saveState(); updateForecastCharts();
+  });
+
+  updateForecastCharts();
+}
+
+function updateForecastCharts(){
+  const { points, bucketState } = runForecast();
+  const lineWrap = document.getElementById('lineChart');
+  lineWrap.innerHTML = '';
+  lineWrap.appendChild(lineChart(points));
+
+  const flowWrap = document.getElementById('flowChart');
+  flowWrap.innerHTML = '';
+  flowWrap.appendChild(flowChart(points));
+
+  const last = points[points.length-1];
+  document.getElementById('fcEndNote').textContent =
+    `Projected ${fmt(last.savingsBalance)} in savings + ${fmt(last.buffer)} spare cash after ${state.forecast.months} months`;
+
+  const etaTbl = document.getElementById('etaTable');
+  etaTbl.innerHTML = bucketState.map(b=>{
+    const done = b.balance >= b.target;
+    const monthsLeft = (!done && b.monthly>0) ? Math.ceil((b.target-b.balance)/b.monthly) : null;
+    return `<tr>
+      <td><span class="tag" style="background:${resolveVar('var(--savings)')}">${escapeHtml(b.name)}</span></td>
+      <td>${fmt(b.target)} target</td>
+      <td class="amt">${done ? 'Reached' : (monthsLeft!==null ? monthsLeft+' months' : 'No contribution')}</td>
+    </tr>`;
+  }).join('') || '<tr><td class="empty">No savings goals yet.</td></tr>';
+}
+
+function lineChart(points){
+  const ns='http://www.w3.org/2000/svg';
+  const w=760, h=200, padL=54, padB=26, padT=14, padR=14;
+  const svg = document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('width','100%'); svg.setAttribute('height', h);
+
+  const maxVal = Math.max(...points.map(p=>p.savingsBalance), 1) * 1.1;
+  const plotW = w-padL-padR, plotH = h-padT-padB;
+
+  // gridlines
+  for(let i=0;i<=4;i++){
+    const y = padT + plotH - (i/4)*plotH;
+    const line = document.createElementNS(ns,'line');
+    line.setAttribute('x1',padL); line.setAttribute('x2',w-padR);
+    line.setAttribute('y1',y); line.setAttribute('y2',y);
+    line.setAttribute('stroke', resolveVar('var(--rule)'));
+    svg.appendChild(line);
+    const label = document.createElementNS(ns,'text');
+    label.setAttribute('x',padL-8); label.setAttribute('y',y+4); label.setAttribute('text-anchor','end');
+    label.setAttribute('font-size','10.5'); label.setAttribute('fill', resolveVar('var(--ink-soft)'));
+    label.textContent = fmt((maxVal*i/4), 0);
+    svg.appendChild(label);
+  }
+
+  const xFor = (i)=> padL + (points.length<=1? 0 : (i/(points.length-1))*plotW);
+  const yFor = (v)=> padT + plotH - (v/maxVal)*plotH;
+
+  let d = '';
+  points.forEach((p,i)=>{ d += (i===0?'M':'L') + xFor(i).toFixed(1) + ',' + yFor(p.savingsBalance).toFixed(1) + ' '; });
+  const areaD = d + `L${xFor(points.length-1).toFixed(1)},${padT+plotH} L${padL},${padT+plotH} Z`;
+
+  const area = document.createElementNS(ns,'path');
+  area.setAttribute('d', areaD);
+  area.setAttribute('fill', resolveVar('var(--brand-tint)'));
+  svg.appendChild(area);
+
+  const path = document.createElementNS(ns,'path');
+  path.setAttribute('d', d);
+  path.setAttribute('fill','none');
+  path.setAttribute('stroke', resolveVar('var(--savings)'));
+  path.setAttribute('stroke-width','2.5');
+  svg.appendChild(path);
+
+  // x-axis labels (every ~1/4)
+  const step = Math.max(1, Math.round(points.length/6));
+  points.forEach((p,i)=>{
+    if(i % step === 0 || i===points.length-1){
+      const t = document.createElementNS(ns,'text');
+      t.setAttribute('x', xFor(i)); t.setAttribute('y', h-6); t.setAttribute('text-anchor','middle');
+      t.setAttribute('font-size','10'); t.setAttribute('fill', resolveVar('var(--ink-soft)'));
+      t.textContent = 'M'+p.month;
+      svg.appendChild(t);
+    }
+  });
+  return svg;
+}
+
+function flowChart(points){
+  const ns='http://www.w3.org/2000/svg';
+  const w=760, h=180, padL=54, padB=26, padT=14, padR=14;
+  const svg = document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  svg.setAttribute('width','100%'); svg.setAttribute('height', h);
+
+  const sample = points.filter((p,i)=> i>0 && (i % Math.max(1,Math.round(points.length/14)) === 0 || i===points.length-1));
+  const plotW = w-padL-padR, plotH = h-padT-padB;
+  const outgo = sample.map(p=> p.expenses + (state.savings.buckets.reduce((s,b)=>s+b.monthly,0)));
+  const maxVal = Math.max(...sample.map(p=>p.income), ...outgo, 1) * 1.15;
+
+  for(let i=0;i<=3;i++){
+    const y = padT + plotH - (i/3)*plotH;
+    const line = document.createElementNS(ns,'line');
+    line.setAttribute('x1',padL); line.setAttribute('x2',w-padR); line.setAttribute('y1',y); line.setAttribute('y2',y);
+    line.setAttribute('stroke', resolveVar('var(--rule)'));
+    svg.appendChild(line);
+  }
+
+  const bandW = plotW/sample.length;
+  sample.forEach((p,i)=>{
+    const x = padL + i*bandW + bandW*0.15;
+    const bw = bandW*0.32;
+    const incH = (p.income/maxVal)*plotH;
+    const outH = ((p.expenses + state.savings.buckets.reduce((s,b)=>s+b.monthly,0))/maxVal)*plotH;
+    const r1 = document.createElementNS(ns,'rect');
+    r1.setAttribute('x',x); r1.setAttribute('y', padT+plotH-incH); r1.setAttribute('width',bw); r1.setAttribute('height',incH);
+    r1.setAttribute('fill', resolveVar('var(--brand)'));
+    svg.appendChild(r1);
+    const r2 = document.createElementNS(ns,'rect');
+    r2.setAttribute('x',x+bw+3); r2.setAttribute('y', padT+plotH-outH); r2.setAttribute('width',bw); r2.setAttribute('height',outH);
+    r2.setAttribute('fill', resolveVar('var(--cat-loans)'));
+    svg.appendChild(r2);
+    const t = document.createElementNS(ns,'text');
+    t.setAttribute('x', x+bw); t.setAttribute('y', h-6); t.setAttribute('text-anchor','middle');
+    t.setAttribute('font-size','10'); t.setAttribute('fill', resolveVar('var(--ink-soft)'));
+    t.textContent = 'M'+p.month;
+    svg.appendChild(t);
+  });
+
+  // legend
+  const leg = document.createElementNS(ns,'g');
+  leg.innerHTML = `
+    <rect x="${padL}" y="0" width="9" height="9" fill="${resolveVar('var(--brand)')}"></rect>
+    <text x="${padL+13}" y="8.5" font-size="10.5" fill="${resolveVar('var(--ink-soft)')}">Income</text>
+    <rect x="${padL+70}" y="0" width="9" height="9" fill="${resolveVar('var(--cat-loans)')}"></rect>
+    <text x="${padL+83}" y="8.5" font-size="10.5" fill="${resolveVar('var(--ink-soft)')}">Expenses + savings</text>
+  `;
+  svg.appendChild(leg);
+  return svg;
+}
+
+/* ============================= IMPORT / EXPORT ============================= */
+
+function ioStatus(msg, isError){
+  const el = document.getElementById('ioStatus');
+  if(!el) return;
+  el.textContent = msg;
+  el.className = 'io-status show ' + (isError ? 'err' : 'ok');
+}
+
+function buildWorkbook(includeData){
+  const wb = XLSX.utils.book_new();
+
+  const expRows = [['Category','Item','Who','Frequency (Monthly/Yearly)','Amount']];
+  if(includeData){
+    state.expenses.forEach(e=> expRows.push([titleCase(e.category), e.item, e.person||'All', titleCase(e.frequency), Number(e.amount)||0]));
+  } else {
+    expRows.push(['Bills','Example: Electricity — delete this row','All','Monthly',150]);
+    for(let i=0;i<16;i++) expRows.push(['','','','','']);
+  }
+  const expSheet = XLSX.utils.aoa_to_sheet(expRows);
+  expSheet['!cols'] = [{wch:18},{wch:28},{wch:12},{wch:24},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, expSheet, 'Expenses');
+
+  const incRows = [['Name','Pay Frequency (Fortnightly/Monthly)','Amount']];
+  if(includeData){
+    state.income.earners.forEach(p=>{
+      incRows.push([p.name, titleCase(earnerFreq(p)), Number(earnerPayAmount(p).toFixed(2))]);
+    });
+  } else {
+    incRows.push(['Example: Alex — delete this row','Fortnightly',2400]);
+    for(let i=0;i<6;i++) incRows.push(['','','']);
+  }
+  const incSheet = XLSX.utils.aoa_to_sheet(incRows);
+  incSheet['!cols'] = [{wch:24},{wch:28},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, incSheet, 'Income');
+
+  const savRows = [['Goal Name','Target','Starting Balance','Monthly Contribution']];
+  if(includeData){
+    state.savings.buckets.forEach(b=> savRows.push([b.name, Number(b.target)||0, Number(b.start)||0, Number(b.monthly)||0]));
+  } else {
+    savRows.push(['Example: Emergency fund — delete this row',10000,0,300]);
+    for(let i=0;i<6;i++) savRows.push(['','','','']);
+  }
+  const savSheet = XLSX.utils.aoa_to_sheet(savRows);
+  savSheet['!cols'] = [{wch:28},{wch:12},{wch:16},{wch:20}];
+  XLSX.utils.book_append_sheet(wb, savSheet, 'Savings');
+
+  const actRows = [['Category','Description','Amount']];
+  if(includeData){
+    state.actuals.forEach(a=> actRows.push([titleCase(a.category), a.item, Number(a.amount)||0]));
+  } else {
+    actRows.push(['Bills','Example: Electricity — delete this row',148]);
+    for(let i=0;i<16;i++) actRows.push(['','','']);
+  }
+  const actSheet = XLSX.utils.aoa_to_sheet(actRows);
+  actSheet['!cols'] = [{wch:18},{wch:34},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, actSheet, 'Actuals');
+
+  return wb;
+}
+
+function exportWorkbook(includeData){
+  if(typeof XLSX === 'undefined'){
+    ioStatus('Could not load the Excel library — check your internet connection and try again.', true);
+    return;
+  }
+  const wb = buildWorkbook(includeData);
+  const filename = includeData ? 'household-ledger-data.xlsx' : 'household-ledger-template.xlsx';
+  XLSX.writeFile(wb, filename);
+  ioStatus(includeData ? 'Downloaded your current data as an Excel file.' : 'Downloaded a blank template — fill it in and import it back in.', false);
+}
+
+/* ---------- Custom, selectable export ---------- */
+
+function defaultExportName(){
+  const name = (state.budgetName||'').trim() || 'Household Budget';
+  const monthYear = new Date().toLocaleString('en-US', { month:'long', year:'numeric' });
+  return `${name} - ${monthYear}`;
+}
+
+function exportableSets(){
+  return [
+    { key:'expenses',  label:'Expenses (budgeted)' },
+    { key:'actuals',   label:'Actual entries' },
+    { key:'income',    label:'Income' },
+    { key:'savings',   label:'Savings goals' },
+    { key:'scenarios', label:'Scenarios' },
+    { key:'categories',label:'Categories' },
+    { key:'people',    label:'People' }
+  ];
+}
+
+function sanitizeFilename(name){
+  return (name||'export').replace(/[\\/:*?"<>|]/g, '-').trim() || 'export';
+}
+
+function buildCustomWorkbook(selected){
+  const wb = XLSX.utils.book_new();
+  const has = (k)=> selected.includes(k);
+
+  if(has('expenses')){
+    // Account and Done are added at the end so the existing column positions (which
+    // the importer relies on) don't move.
+    const accName = id=>{ const a = state.accounts.find(x=> x.id===id); return a ? a.name : ''; };
+    const rows = [['ID','Category','Item','Who','Frequency','Amount','Monthly Equivalent','Account','Done']];
+    state.expenses.forEach(e=> rows.push([
+      e.id, titleCase(e.category), e.item, e.person, titleCase(e.frequency), Number(e.amount)||0, Number(monthlyOf(e).toFixed(2)), accName(e.account), e.actioned ? 'Yes' : 'No'
+    ]));
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet['!cols'] = [{wch:14},{wch:16},{wch:26},{wch:10},{wch:11},{wch:11},{wch:16},{wch:20},{wch:6}];
+    XLSX.utils.book_append_sheet(wb, sheet, 'Expenses');
+  }
+
+  if(has('actuals')){
+    const rows = [['ID','Category','Description','Amount']];
+    state.actuals.forEach(a=> rows.push([a.id, titleCase(a.category), a.item, Number(a.amount)||0]));
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet['!cols'] = [{wch:14},{wch:16},{wch:32},{wch:11}];
+    XLSX.utils.book_append_sheet(wb, sheet, 'Actuals');
+  }
+
+  if(has('income')){
+    const rows = [['ID','Name','Pay Frequency','Amount']];
+    state.income.earners.forEach(p=>{
+      rows.push([p.id, p.name, titleCase(earnerFreq(p)), Number(earnerPayAmount(p).toFixed(2))]);
+    });
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet['!cols'] = [{wch:14},{wch:20},{wch:16},{wch:11}];
+    XLSX.utils.book_append_sheet(wb, sheet, 'Income');
+  }
+
+  if(has('savings')){
+    const rows = [['ID','Goal Name','Target','Starting Balance','Monthly Contribution','Split']];
+    state.savings.buckets.forEach(b=>{
+      const split = bucketSplit(b);
+      const splitText = state.users.map(u=> `${u} ${fmtPct(split[u])}%`).join(' / ');
+      rows.push([b.id, b.name, Number(b.target)||0, Number(b.start)||0, Number(b.monthly)||0, splitText]);
+    });
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet['!cols'] = [{wch:14},{wch:24},{wch:11},{wch:14},{wch:16},{wch:26}];
+    XLSX.utils.book_append_sheet(wb, sheet, 'Savings');
+  }
+
+  if(has('scenarios')){
+    const rows = [['Scenario ID','Scenario Name','Item ID','Category','Item','Who','Frequency','Amount','Monthly Equivalent']];
+    state.scenarios.forEach(s=>{
+      s.expenses.forEach(e=> rows.push([
+        s.id, s.name, e.id, titleCase(e.category), e.item, e.person, titleCase(e.frequency), Number(e.amount)||0, Number(monthlyOf(e).toFixed(2))
+      ]));
+    });
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet['!cols'] = [{wch:14},{wch:18},{wch:14},{wch:16},{wch:24},{wch:10},{wch:11},{wch:11},{wch:16}];
+    XLSX.utils.book_append_sheet(wb, sheet, 'Scenarios');
+
+    const savRows = [['Scenario ID','Scenario Name','Goal ID','Goal','Target','Monthly Contribution','Split']];
+    state.scenarios.forEach(s=>{
+      (s.savings||[]).forEach(b=>{
+        const split = bucketSplit(b);
+        savRows.push([s.id, s.name, b.id, b.name, Number(b.target)||0, Number(b.monthly)||0, state.users.map(u=> `${u} ${fmtPct(split[u])}%`).join(' / ')]);
+      });
+    });
+    const savSheet = XLSX.utils.aoa_to_sheet(savRows);
+    savSheet['!cols'] = [{wch:14},{wch:18},{wch:14},{wch:22},{wch:11},{wch:18},{wch:26}];
+    XLSX.utils.book_append_sheet(wb, savSheet, 'Scenario Savings');
+  }
+
+  if(has('categories')){
+    const rows = [['Category','Color']];
+    allCategories().forEach(c=> rows.push([titleCase(c), rgbToHex(resolveVar(colorFor(c)))]));
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet['!cols'] = [{wch:20},{wch:10}];
+    XLSX.utils.book_append_sheet(wb, sheet, 'Categories');
+  }
+
+  if(has('people')){
+    const rows = [['Person','Color']];
+    state.users.forEach((u,i)=> rows.push([u, rgbToHex(colorForPerson(u,i))]));
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    sheet['!cols'] = [{wch:20},{wch:10}];
+    XLSX.utils.book_append_sheet(wb, sheet, 'People');
+  }
+
+  return wb;
+}
+
+function exportCustomWorkbook(selected, name){
+  const statusEl = 'customExportStatus';
+  function status(msg, isError){
+    const el = document.getElementById(statusEl);
+    if(!el) return;
+    el.textContent = msg;
+    el.className = 'io-status show ' + (isError ? 'err' : 'ok');
+  }
+  if(typeof XLSX === 'undefined'){
+    status('Could not load the Excel library — check your internet connection and try again.', true);
+    return;
+  }
+  if(!selected.length){
+    status('Pick at least one thing to include.', true);
+    return;
+  }
+  const wb = buildCustomWorkbook(selected);
+  XLSX.writeFile(wb, sanitizeFilename(name) + '.xlsx');
+  status(`Downloaded "${sanitizeFilename(name)}.xlsx" with ${selected.length} sheet${selected.length===1?'':'s'}.`, false);
+}
+
+
+
+function isExampleRow(val){
+  return typeof val === 'string' && val.trim().toLowerCase().startsWith('example');
+}
+
+function sheetRows(wb, name){
+  const sheet = wb.Sheets[name];
+  if(!sheet) return [];
+  return XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' }).slice(1);
+}
+function sheetHasIdColumn(wb, name){
+  const sheet = wb.Sheets[name];
+  if(!sheet) return false;
+  const header = XLSX.utils.sheet_to_json(sheet, { header:1, defval:'' })[0] || [];
+  return String(header[0]||'').trim().toLowerCase() === 'id';
+}
+
+function importWorkbook(file){
+  if(typeof XLSX === 'undefined'){
+    ioStatus('Could not load the Excel library — check your internet connection and try again.', true);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onerror = ()=> ioStatus('Could not read that file.', true);
+  reader.onload = (ev)=>{
+    let wb;
+    try{
+      wb = XLSX.read(new Uint8Array(ev.target.result), { type:'array' });
+    }catch(err){
+      ioStatus('That file does not look like a valid Excel workbook.', true);
+      return;
+    }
+
+    let added = 0, updated = 0;
+
+    const expHasId = sheetHasIdColumn(wb, 'Expenses');
+    sheetRows(wb, 'Expenses').forEach(row=>{
+      let idRaw, catRaw, itemRaw, whoRaw, freqRaw, amountRaw;
+      if(expHasId){ [idRaw, catRaw, itemRaw, whoRaw, freqRaw, amountRaw] = row; }
+      else { [catRaw, itemRaw, whoRaw, freqRaw, amountRaw] = row; }
+      if(isExampleRow(itemRaw) || (!catRaw && !itemRaw)) return;
+      if(!itemRaw) return;
+      const category = String(catRaw||'Unsorted').trim().toUpperCase();
+      const item = String(itemRaw).trim();
+      const person = String(whoRaw||'All').trim() || 'All';
+      const frequency = String(freqRaw||'Monthly').trim().toUpperCase().startsWith('YEAR') ? 'YEARLY' : 'MONTHLY';
+      const amount = parseFloat(amountRaw) || 0;
+
+      if(!state.categories.includes(category)) state.categories.push(category);
+      if(person.toLowerCase()!=='all' && !state.users.includes(person)) state.users.push(person);
+
+      // Prefer matching by the row's own ID (stable even if category/item text changed
+      // since export) over the old category+item composite match, which can't tell two
+      // genuinely different items with the same name/category apart.
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.expenses.find(e=> e.id===id) : null;
+      const existing = existingById || state.expenses.find(e=>
+        (e.category||'').toUpperCase()===category && e.item.trim().toLowerCase()===item.toLowerCase());
+      if(existing){
+        if(existingById){ existing.category = category; existing.item = item; }
+        existing.person = person; existing.frequency = frequency; existing.amount = amount;
+        updated++;
+      } else {
+        state.expenses.push({ id: id || newId(), category, item, person, frequency, amount });
+        added++;
+      }
+    });
+
+    const incHasId = sheetHasIdColumn(wb, 'Income');
+    sheetRows(wb, 'Income').forEach(row=>{
+      let idRaw, nameRaw, freqRaw, amountRaw;
+      if(incHasId){ [idRaw, nameRaw, freqRaw, amountRaw] = row; }
+      else { [nameRaw, freqRaw, amountRaw] = row; }
+      if(isExampleRow(nameRaw) || !nameRaw) return;
+      const name = String(nameRaw).trim();
+      const freqU = String(freqRaw||'Monthly').trim().toUpperCase().startsWith('FORT') ? 'FORTNIGHTLY' : 'MONTHLY';
+      const amount = parseFloat(amountRaw) || 0;
+      const monthly = amount * PAYS_PER_MONTH[freqU];
+
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.income.earners.find(p=> p.id===id) : null;
+      const existing = existingById || state.income.earners.find(p=> p.name.trim().toLowerCase()===name.toLowerCase());
+      if(existing){
+        if(existingById) existing.name = name;
+        existing.monthly = monthly; existing.frequency = freqU; updated++;
+      } else { state.income.earners.push({ id: id || newId(), name, monthly, frequency: freqU }); added++; }
+    });
+
+    const savHasId = sheetHasIdColumn(wb, 'Savings');
+    sheetRows(wb, 'Savings').forEach(row=>{
+      let idRaw, nameRaw, targetRaw, startRaw, monthlyRaw;
+      if(savHasId){ [idRaw, nameRaw, targetRaw, startRaw, monthlyRaw] = row; }
+      else { [nameRaw, targetRaw, startRaw, monthlyRaw] = row; }
+      if(isExampleRow(nameRaw) || !nameRaw) return;
+      const name = String(nameRaw).trim();
+      const target = parseFloat(targetRaw) || 0;
+      const start = parseFloat(startRaw) || 0;
+      const monthly = parseFloat(monthlyRaw) || 0;
+
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.savings.buckets.find(b=> b.id===id) : null;
+      const existing = existingById || state.savings.buckets.find(b=> b.name.trim().toLowerCase()===name.toLowerCase());
+      if(existing){
+        if(existingById) existing.name = name;
+        existing.target = target; existing.start = start; existing.monthly = monthly; updated++;
+      } else { state.savings.buckets.push({ id: id || newId(), name, target, start, monthly }); added++; }
+    });
+
+    const actHasId = sheetHasIdColumn(wb, 'Actuals');
+    sheetRows(wb, 'Actuals').forEach(row=>{
+      let idRaw, catRaw, itemRaw, amountRaw;
+      if(actHasId){ [idRaw, catRaw, itemRaw, amountRaw] = row; }
+      else { [catRaw, itemRaw, amountRaw] = row; }
+      if(isExampleRow(itemRaw) || !itemRaw) return;
+      const category = String(catRaw||'Unsorted').trim().toUpperCase();
+      const item = String(itemRaw).trim();
+      const amount = parseFloat(amountRaw) || 0;
+      if(!state.categories.includes(category)) state.categories.push(category);
+
+      const id = idRaw ? String(idRaw).trim() : '';
+      const existingById = id ? state.actuals.find(a=> a.id===id) : null;
+      const existing = existingById || state.actuals.find(a=>
+        (a.category||'').toUpperCase()===category && a.item.trim().toLowerCase()===item.toLowerCase());
+      if(existing){
+        if(existingById){ existing.category = category; existing.item = item; }
+        existing.amount = amount; updated++;
+      } else { state.actuals.push({ id: id || newId(), category, item, amount }); added++; }
+    });
+
+    saveState();
+    render();
+    ioStatus(`Import complete — ${added} new item${added===1?'':'s'} added, ${updated} existing item${updated===1?'':'s'} updated.`, false);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ============================= SCENARIOS ============================= */
+
+let scenarioSelectedId = null;
+
+function scenarioTotal(scenario){
+  return scenario.expenses.reduce((s,e)=> s + monthlyOf(e), 0);
+}
+function scenarioCategoryTotals(scenario){
+  const map = {};
+  scenario.expenses.forEach(e=>{
+    const cat = (e.category||'UNSORTED').toUpperCase();
+    map[cat] = (map[cat]||0) + monthlyOf(e);
+  });
+  return map;
+}
+function freshScenarioExpenses(source){
+  return JSON.parse(JSON.stringify(source)).map(e=> ({ ...e, id:newId() }));
+}
+function freshScenarioSavings(source){
+  return JSON.parse(JSON.stringify(source||[])).map(b=> ({ ...b, id:newId(), split:b.split||{} }));
+}
+function scenarioSavingsTotal(scenario){
+  return (scenario.savings||[]).reduce((s,b)=> s + (Number(b.monthly)||0), 0);
+}
+// Scenarios created before savings were part of them only hold expenses. Give them a
+// copy of the current live goals, so they start out matching the live budget.
+function ensureScenarioSavings(scenario){
+  if(Array.isArray(scenario.savings)) return false;
+  scenario.savings = freshScenarioSavings(state.savings.buckets);
+  return true;
+}
+
+function renderScenarios(root){
+  if(!scenarioSelectedId && state.scenarios.length) scenarioSelectedId = state.scenarios[0].id;
+  const scenario = state.scenarios.find(s=> s.id===scenarioSelectedId);
+
+  root.innerHTML = `
+    <h2>Test a budget</h2>
+    <p class="lede">Build alternate budgets side by side with your live one and see the impact before committing to anything. Changes here never touch your real Expenses.</p>
+    <div class="scenario-tabs" id="scenarioTabs"></div>
+    <div id="scenarioBody"></div>
+  `;
+
+  const tabsWrap = document.getElementById('scenarioTabs');
+  tabsWrap.innerHTML = state.scenarios.map(s=>
+    `<button class="scenario-chip ${s.id===scenarioSelectedId?'active':''}" data-sid="${s.id}">${escapeHtml(s.name)}</button>`
+  ).join('') + `<button class="scenario-chip add" id="newScenarioBtn">+ New scenario</button>`;
+
+  tabsWrap.querySelectorAll('[data-sid]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{ scenarioSelectedId = btn.dataset.sid; render(); });
+  });
+  document.getElementById('newScenarioBtn').addEventListener('click', ()=>{
+    const s = { id:newId(), name:'Scenario '+(state.scenarios.length+1), expenses: freshScenarioExpenses(state.expenses), savings: freshScenarioSavings(state.savings.buckets) };
+    state.scenarios.push(s);
+    scenarioSelectedId = s.id;
+    saveState(); render();
+  });
+
+  const body = document.getElementById('scenarioBody');
+  if(!scenario){
+    body.innerHTML = `<div class="empty" style="padding:30px 0;">No scenarios yet. Click "+ New scenario" above to start from a copy of your live budget and try changes risk-free.</div>`;
+    return;
+  }
+
+  if(ensureScenarioSavings(scenario)) saveState();
+  const income = totalMonthlyIncome();
+  const liveExp = totalMonthlyExpenses(), scenExp = scenarioTotal(scenario);
+  const liveSav = totalMonthlySavings(), scenSav = scenarioSavingsTotal(scenario);
+  const liveLeft = income - liveExp - liveSav, scenLeft = income - scenExp - scenSav;
+  // Colour the difference by whether it's good news: spending more is bad, ending
+  // the month with more left over is good. Saving more or less is shown neutrally,
+  // since its effect already shows up in "Left over".
+  const diffCell = (d, goodWhenUp)=>{
+    if(Math.abs(d) < 0.005) return `<td class="num">—</td>`;
+    const col = goodWhenUp===null ? 'var(--ink)' : ((d>0)===goodWhenUp ? 'var(--good)' : 'var(--warn)');
+    return `<td class="num" style="color:${col}; font-weight:600;">${d>0?'+':''}${fmt(d)}</td>`;
+  };
+
+  body.innerHTML = `
+    <div class="scenario-header">
+      <input type="text" id="scenarioNameInput" value="${escapeHtml(scenario.name)}">
+      <div class="scenario-actions">
+        <button class="btn small ghost" id="duplicateScenarioBtn">Duplicate</button>
+        <button class="btn small" id="applyScenarioBtn">Apply as live budget</button>
+        <button class="icon-btn" id="deleteScenarioBtn" title="Delete scenario">✕</button>
+      </div>
+    </div>
+
+    <div class="scen-compare-wrap">
+      <table class="scen-compare">
+        <thead><tr><th></th><th class="num">Live budget</th><th class="num">This scenario</th><th class="num">Difference</th></tr></thead>
+        <tbody>
+          <tr><td>Expenses</td><td class="num">${fmt(liveExp)}</td><td class="num">${fmt(scenExp)}</td>${diffCell(scenExp-liveExp, false)}</tr>
+          <tr><td>Savings</td><td class="num">${fmt(liveSav)}</td><td class="num">${fmt(scenSav)}</td>${diffCell(scenSav-liveSav, null)}</tr>
+          <tr class="total"><td>Left over <span style="font-weight:400; color:var(--ink-soft);">(of ${fmt(income)} income)</span></td>
+            <td class="num" style="color:${liveLeft<0?'var(--warn)':'inherit'}">${fmt(liveLeft)}</td>
+            <td class="num" style="color:${scenLeft<0?'var(--warn)':'inherit'}">${fmt(scenLeft)}</td>${diffCell(scenLeft-liveLeft, true)}</tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="block-head"><h3>By category</h3><span class="hint">Dark tick marks your live budget</span></div>
+    <div id="scenarioBvaTable"></div>
+
+    <div class="block-head" style="margin-top:28px;"><h3>Scenario savings goals</h3><span class="hint">Each goal keeps its per-person split from the Savings tab</span></div>
+    <div id="scenarioSavings"></div>
+
+    <div class="block-head" style="margin-top:28px;"><h3>Scenario expenses</h3></div>
+    <div id="scenarioGroups"></div>
+    <div class="add-inline" style="max-width:320px;">
+      <input type="text" id="scenarioNewCatInput" placeholder="New category name">
+      <button class="btn small ghost" id="scenarioAddCatBtn">+ Add category</button>
+    </div>
+  `;
+
+  document.getElementById('scenarioNameInput').addEventListener('change', (e)=>{
+    const v = e.target.value.trim();
+    if(v) scenario.name = v;
+    saveState(); render();
+  });
+  document.getElementById('duplicateScenarioBtn').addEventListener('click', ()=>{
+    const copy = { id:newId(), name:scenario.name+' copy', expenses: freshScenarioExpenses(scenario.expenses), savings: freshScenarioSavings(scenario.savings) };
+    state.scenarios.push(copy);
+    scenarioSelectedId = copy.id;
+    saveState(); render();
+  });
+  document.getElementById('applyScenarioBtn').addEventListener('click', ()=>{
+    if(!confirm(`Replace your live budget with "${scenario.name}"? Your current expenses and savings goals will be overwritten — the scenario itself stays here so you can compare again later.`)) return;
+    // The live rows are replaced with fresh copies, so the old rows must be deleted
+    // from the database too — otherwise they reappear alongside the new ones on reload.
+    state.expenses.forEach(e=> syncDeleteRow('expenses', e.id));
+    state.savings.buckets.forEach(b=> syncDeleteRow('savings_buckets', b.id));
+    state.expenses = freshScenarioExpenses(scenario.expenses);
+    state.savings.buckets = freshScenarioSavings(scenario.savings);
+    scenario.expenses.forEach(e=>{
+      const cat = (e.category||'').toUpperCase();
+      if(cat && !state.categories.includes(cat)) state.categories.push(cat);
+    });
+    saveState(); render();
+  });
+  document.getElementById('deleteScenarioBtn').addEventListener('click', ()=>{
+    if(!confirm(`Delete "${scenario.name}"? This can't be undone.`)) return;
+    state.scenarios = state.scenarios.filter(s=> s.id!==scenario.id);
+    scenarioSelectedId = state.scenarios.length ? state.scenarios[0].id : null;
+    saveState(); render();
+  });
+
+  renderScenarioBva(scenario);
+  renderScenarioSavings(scenario);
+  renderScenarioGroups(scenario);
+
+  document.getElementById('scenarioAddCatBtn').addEventListener('click', ()=>{
+    const input = document.getElementById('scenarioNewCatInput');
+    const name = input.value.trim();
+    if(!name) return;
+    const cat = name.toUpperCase();
+    if(!state.categories.includes(cat)) state.categories.push(cat);
+    saveState(); render();
+  });
+}
+
+function renderScenarioSavings(scenario){
+  const wrap = document.getElementById('scenarioSavings');
+  const live = Object.fromEntries(state.savings.buckets.map(b=> [b.name.trim().toLowerCase(), b]));
+  const rows = scenario.savings.map(b=>{
+    const lb = live[(b.name||'').trim().toLowerCase()];
+    const delta = lb ? (Number(b.monthly)||0) - (Number(lb.monthly)||0) : null;
+    const deltaTxt = delta===null ? '<span style="color:var(--ink-soft);">new</span>'
+      : Math.abs(delta)<0.005 ? '<span style="color:var(--ink-soft);">—</span>'
+      : `<span style="font-weight:600;">${delta>0?'+':''}${fmt(delta)}</span>`;
+    return `<tr>
+      <td><input type="text" value="${escapeHtml(b.name)}" data-scen-bucket="${escapeHtml(b.id)}" data-field="name"></td>
+      <td><input class="amt" type="text" inputmode="decimal" value="${b.target}" data-scen-bucket="${escapeHtml(b.id)}" data-field="target"></td>
+      <td><input class="amt" type="text" inputmode="decimal" value="${b.monthly}" data-scen-bucket="${escapeHtml(b.id)}" data-field="monthly"></td>
+      <td class="amt">${deltaTxt}</td>
+      <td class="actions"><button class="icon-btn" data-scen-bucket-del="${escapeHtml(b.id)}" title="Remove goal">✕</button></td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML = `
+    <div class="cat-group"><div class="exp-scroll"><table class="exp" style="min-width:520px;">
+      <thead><tr><th style="width:36%">Goal</th><th style="width:20%">Target</th><th style="width:20%">Monthly</th><th style="width:16%" title="Monthly contribution compared with the live goal of the same name">vs live</th><th></th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="5" class="empty" style="padding:10px;">No savings goals in this scenario.</td></tr>`}</tbody>
+    </table></div>
+    <div class="add-row-bar"><button class="btn small ghost" id="scenAddBucketBtn">+ Add savings goal</button></div></div>`;
+
+  wrap.querySelectorAll('input[data-scen-bucket]').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      const b = scenario.savings.find(x=> x.id===el.dataset.scenBucket);
+      if(!b) return;
+      const f = el.dataset.field;
+      if(f==='name'){ const v = el.value.trim(); if(v) b.name = v; }
+      else b[f] = Math.max(0, parseFloat(el.value)||0);
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-scen-bucket-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      scenario.savings = scenario.savings.filter(x=> x.id!==btn.dataset.scenBucketDel);
+      saveState(); render();
+    });
+  });
+  document.getElementById('scenAddBucketBtn').addEventListener('click', ()=>{
+    scenario.savings.push({ id:newId(), name:'New goal', target:1000, start:0, monthly:50, split:{} });
+    saveState(); render();
+  });
+}
+
+function renderScenarioBva(scenario){
+  const wrap = document.getElementById('scenarioBvaTable');
+  const liveTotals = categoryTotals();
+  const scenTotals = scenarioCategoryTotals(scenario);
+  const cats = Array.from(new Set([...Object.keys(liveTotals), ...Object.keys(scenTotals)]));
+  if(cats.length===0){ wrap.innerHTML = '<div class="empty">No categories yet.</div>'; return; }
+  const maxVal = Math.max(1, ...cats.map(c=> Math.max(liveTotals[c]||0, scenTotals[c]||0)));
+
+  wrap.innerHTML = cats.sort((a,b)=> (scenTotals[b]||0)-(scenTotals[a]||0)).map(c=>{
+    const live = liveTotals[c]||0, scen = scenTotals[c]||0;
+    const diff = scen - live;
+    const fillPct = Math.min(100, (scen/maxVal)*100);
+    const livePct = Math.min(100, (live/maxVal)*100);
+    return `<div class="bva-row">
+      <span class="cat-name">${escapeHtml(titleCase(c))}</span>
+      <div class="bva-track">
+        <div class="bva-fill" style="width:${fillPct}%; background:${colorFor(c)}"></div>
+        <div class="bva-budget-mark" style="left:${livePct}%"></div>
+      </div>
+      <span class="amt">${fmt(live)}</span>
+      <span class="amt">${fmt(scen)}</span>
+      <span class="amt variance ${diff>0?'over':'under'}">${diff>0?'+':''}${fmt(diff)}</span>
+      <span></span>
+    </div>`;
+  }).join('');
+}
+
+function renderScenarioGroups(scenario){
+  const wrap = document.getElementById('scenarioGroups');
+  const totals = scenarioCategoryTotals(scenario);
+  const cats = Array.from(new Set([...state.categories, ...Object.keys(totals)]));
+  const ordered = cats.sort((a,b)=> (totals[b]||0)-(totals[a]||0));
+
+  wrap.innerHTML = '';
+  if(ordered.length===0){ wrap.innerHTML = '<div class="empty">No categories yet.</div>'; return; }
+
+  ordered.forEach(cat=>{
+    const items = scenario.expenses.filter(e=> (e.category||'').toUpperCase()===cat);
+    const group = document.createElement('div');
+    group.className = 'cat-group';
+    group.innerHTML = `
+      <div class="cat-group-head">
+        <span class="swatch" style="background:${colorFor(cat)}"></span>
+        <span class="name">${escapeHtml(titleCase(cat))}</span>
+        <span class="total">${fmt(totals[cat]||0)} / mo</span>
+      </div>
+      <div class="exp-scroll"><table class="exp" style="min-width:600px;">
+        <thead><tr>
+          <th style="width:26%">Item</th>
+          <th style="width:16%">Who</th>
+          <th style="width:16%">Frequency</th>
+          <th style="width:16%">Amount</th>
+          <th style="width:16%">Monthly</th>
+          <th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="add-row-bar"><button class="btn small ghost" data-scenaddto="${escapeHtml(cat)}">+ Add item to ${escapeHtml(titleCase(cat))}</button></div>
+    `;
+    const tbody = group.querySelector('tbody');
+    items.forEach(e=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td><input type="text" value="${escapeHtml(e.item)}" data-id="${e.id}" data-field="item"></td>
+        <td><select data-id="${e.id}" data-field="person">${whoOptions(e.person)}</select></td>
+        <td>
+          <select data-id="${e.id}" data-field="frequency">
+            <option value="MONTHLY" ${e.frequency==='MONTHLY'?'selected':''}>Monthly</option>
+            <option value="YEARLY" ${e.frequency==='YEARLY'?'selected':''}>Yearly</option>
+          </select>
+        </td>
+        <td><input class="amt" type="text" inputmode="decimal" step="0.01" value="${e.amount}" data-id="${e.id}" data-field="amount"></td>
+        <td class="amt">${fmt(monthlyOf(e), 2)}</td>
+        <td class="actions"><button class="icon-btn" data-scendel="${e.id}" title="Remove">✕</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    if(items.length===0){
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td colspan="6" class="empty" style="padding:10px;">No items in this category yet.</td>`;
+      tbody.appendChild(tr);
+    }
+    wrap.appendChild(group);
+  });
+
+  wrap.querySelectorAll('input,select').forEach(el=>{
+    el.addEventListener('change', (ev)=>{
+      const id = ev.target.dataset.id, field = ev.target.dataset.field;
+      const exp = scenario.expenses.find(x=> x.id===id);
+      if(!exp) return;
+      exp[field] = field==='amount' ? (parseFloat(ev.target.value)||0) : ev.target.value;
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-scendel]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      scenario.expenses = scenario.expenses.filter(x=> x.id!==btn.dataset.scendel);
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-scenaddto]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      scenario.expenses.push({ id:newId(), category:btn.dataset.scenaddto, item:'New item', person:'All', frequency:'MONTHLY', amount:0 });
+      saveState(); render();
+    });
+  });
+}
+
+/* ============================= FLOW ============================= */
+
+let flowMode = 'category'; // 'category' | 'person'
+let flowDataset = 'budgeted'; // 'budgeted' | 'actual'
+let flowExpandedId = null;
+let flowSelectedId = 'income';
+
+function actualCategoryTotals(){
+  const map = {};
+  state.actuals.forEach(a=>{
+    const cat = (a.category||'UNSORTED').toUpperCase();
+    map[cat] = (map[cat]||0) + (Number(a.amount)||0);
+  });
+  return map;
+}
+function itemsForCategoryActual(cat){
+  return state.actuals.filter(a=> (a.category||'').toUpperCase()===cat).sort((a,b)=> (Number(b.amount)||0)-(Number(a.amount)||0));
+}
+
+function personColorPalette(){
+  return ['var(--cat-bills)','var(--cat-insurances)','var(--cat-mortgage)','var(--cat-subscriptions)','var(--cat-car)','var(--cat-yearly)'];
+}
+function colorForPerson(name, idx){
+  if(state.personColors && state.personColors[name]) return state.personColors[name];
+  if(name==='All') return resolveVar('var(--ink-soft)');
+  const pal = personColorPalette();
+  return resolveVar(pal[idx % pal.length]);
+}
+
+function expensesByPerson(){
+  const people = ['All', ...state.users];
+  const totals = {};
+  people.forEach(p=> totals[p]=0);
+  state.expenses.forEach(e=>{
+    const p = people.includes(e.person) ? e.person : 'All';
+    totals[p] = (totals[p]||0) + monthlyOf(e);
+  });
+  return totals;
+}
+function itemsForPerson(name){
+  const people = ['All', ...state.users];
+  return state.expenses.filter(e=> (people.includes(e.person) ? e.person : 'All') === name)
+    .sort((a,b)=> monthlyOf(b)-monthlyOf(a));
+}
+function itemsForCategory(cat){
+  return state.expenses.filter(e=> (e.category||'').toUpperCase()===cat).sort((a,b)=> monthlyOf(b)-monthlyOf(a));
+}
+
+// One person's share of each savings goal, largest first.
+function saverShares(person){
+  return state.savings.buckets.map(b=> ({ bucket:b, amount:(Number(b.monthly)||0) * (bucketSplit(b)[person]||0) / 100 }))
+    .filter(s=> s.amount>0.004).sort((a,b)=> b.amount-a.amount);
+}
+
+function buildFlowTree(){
+  const income = totalMonthlyIncome();
+  const isActual = flowDataset === 'actual';
+  const totalExp = isActual ? totalActual() : totalMonthlyExpenses();
+  const totalSav = totalMonthlySavings();
+  const left = isActual ? (income - totalExp) : leftover(); // may be negative; not rendered as a node, only used for the callout
+
+  const expensesNode = { id:'expenses', label: isActual ? 'Actual spending' : 'Expenses', value:totalExp, color:resolveVar('var(--cat-loans)') };
+  const savingsNode  = { id:'savings',  label:'Savings',  value:totalSav, color:resolveVar('var(--savings)') };
+  const col1 = isActual ? [expensesNode].filter(n=>n.value>0.004) : [expensesNode, savingsNode].filter(n=> n.value > 0.004);
+
+  let branchNodes;
+  if(isActual){
+    const totals = actualCategoryTotals();
+    branchNodes = Object.keys(totals).sort((a,b)=> totals[b]-totals[a]).map(c=> ({
+      id:'cat:'+c, label:titleCase(c), value:totals[c], color:resolveVar(colorFor(c)), parent:'expenses', kind:'category', key:c
+    }));
+  } else if(flowMode === 'category'){
+    const totals = categoryTotals();
+    branchNodes = Object.keys(totals).sort((a,b)=> totals[b]-totals[a]).map(c=> ({
+      id:'cat:'+c, label:titleCase(c), value:totals[c], color:resolveVar(colorFor(c)), parent:'expenses', kind:'category', key:c
+    }));
+  } else {
+    const totals = expensesByPerson();
+    branchNodes = Object.keys(totals).filter(p=> totals[p]>0.004).sort((a,b)=> totals[b]-totals[a]).map((p,i)=> ({
+      id:'person:'+p, label:p, value:totals[p], color:colorForPerson(p,i), parent:'expenses', kind:'person', key:p
+    }));
+  }
+  let bucketNodes;
+  if(isActual){
+    bucketNodes = [];
+  } else if(flowMode === 'person' && state.users.length){
+    // By person: divide the Savings branch by each person's share of every goal
+    // (from each goal's split on the Savings tab), plus anything left unallocated.
+    const { totals, unallocated } = savingsByPerson();
+    bucketNodes = state.users.map((u,i)=> ({
+      id:'saver:'+u, label:u+' · savings', value:totals[u], color:colorForPerson(u,i), parent:'savings', kind:'saver', key:u
+    })).filter(n=> n.value>0.004).sort((a,b)=> b.value-a.value);
+    if(unallocated>0.004) bucketNodes.push({ id:'saver-unallocated', label:'Not allocated', value:unallocated, color:resolveVar('var(--ink-soft)'), parent:'savings', kind:'saver-unallocated' });
+  } else {
+    bucketNodes = state.savings.buckets.filter(b=> b.monthly>0.004).map(b=> ({
+      id:'bucket:'+b.id, label:b.name, value:b.monthly, color:resolveVar('var(--savings)'), parent:'savings', kind:'bucket', key:b.id
+    }));
+  }
+  const col2 = [...branchNodes, ...bucketNodes];
+
+  let col3 = [];
+  const expandedNode = flowExpandedId ? col2.find(n=> n.id===flowExpandedId) : null;
+  if(expandedNode && expandedNode.kind==='saver'){
+    col3 = saverShares(expandedNode.key).map(s=> ({
+      id:'share:'+s.bucket.id+':'+expandedNode.key, label:s.bucket.name, value:s.amount, color:expandedNode.color, parent:expandedNode.id
+    }));
+  } else if(expandedNode && (expandedNode.kind==='category' || expandedNode.kind==='person')){
+    const items = isActual ? itemsForCategoryActual(expandedNode.key)
+      : (expandedNode.kind==='category' ? itemsForCategory(expandedNode.key) : itemsForPerson(expandedNode.key));
+    col3 = items.filter(e=> (isActual?Number(e.amount)||0:monthlyOf(e)) > 0.004).map(e=> ({
+      id:'item:'+e.id, label:e.item, value: isActual?Number(e.amount)||0:monthlyOf(e), color:expandedNode.color, parent:expandedNode.id
+    }));
+  }
+
+  const root = { id:'income', label:'Income', value:income, color:resolveVar('var(--brand)') };
+  return { root, col1, col2, col3, expandedNode, leftover:left, isActual };
+}
+
+function flowNodeInfo(tree, id){
+  if(id==='income'){
+    const rows = state.income.earners.filter(p=>p.monthly>0).map(p=> ({ label:p.name, value:p.monthly }));
+    return { label:'Income', value: tree.root.value, rows, rowsLabel:'By earner' };
+  }
+  const all = [...tree.col1, ...tree.col2, ...tree.col3];
+  const node = all.find(n=> n.id===id);
+  if(!node) return null;
+  if(id==='expenses'){
+    return { label:node.label, value:node.value, rows: tree.col2.filter(n=>n.parent==='expenses').map(n=>({label:n.label,value:n.value})), rowsLabel: tree.isActual ? 'By category' : (flowMode==='category' ? 'By category' : 'By person') };
+  }
+  if(id==='savings'){
+    return { label:'Savings', value:node.value, rows: tree.col2.filter(n=>n.parent==='savings').map(n=>({label:n.label,value:n.value})), rowsLabel: (flowMode==='person' && state.users.length) ? 'By person' : 'By goal' };
+  }
+  if(node.kind==='saver'){
+    return { label:node.label, value:node.value, rows: saverShares(node.key).map(s=>({label:s.bucket.name, value:s.amount})), rowsLabel:node.key+"'s share of each goal" };
+  }
+  if(node.kind==='saver-unallocated'){
+    return { label:node.label, value:node.value, rows:[], rowsLabel:'' , note:'Part of a goal whose split adds up to less than 100% — adjust it on the Savings tab.' };
+  }
+  if(node.kind==='category'){
+    const items = tree.isActual ? itemsForCategoryActual(node.key) : itemsForCategory(node.key);
+    const rows = tree.isActual ? items.map(a=>({label:a.item,value:Number(a.amount)||0})) : items.map(e=>({label:e.item,value:monthlyOf(e)}));
+    return { label:node.label, value:node.value, rows, rowsLabel:'Items in this category' };
+  }
+  if(node.kind==='person'){
+    const items = itemsForPerson(node.key);
+    return { label:node.label, value:node.value, rows: items.map(e=>({label:e.item,value:monthlyOf(e)})), rowsLabel:'Items assigned to '+node.label };
+  }
+  if(node.kind==='bucket'){
+    const b = state.savings.buckets.find(x=> 'bucket:'+x.id===id);
+    return { label:node.label, value:node.value, rows: b ? [{label:'Target', value:b.target},{label:'Saved so far', value:b.start||0}] : [], rowsLabel:'Goal details' };
+  }
+  // item leaf
+  return { label:node.label, value:node.value, rows:[], rowsLabel:'' };
+}
+
+function flowLegendItems(tree){
+  const items = [];
+  const expensesNode = tree.col1.find(n=>n.id==='expenses');
+  if(expensesNode) items.push({ label:'Expenses (total)', color: expensesNode.color });
+  tree.col2.filter(n=> n.parent==='expenses').forEach(n=> items.push({ label:n.label, color:n.color }));
+  const savingsNode = tree.col1.find(n=>n.id==='savings');
+  if(savingsNode) items.push({ label:'Savings', color: savingsNode.color });
+  return items;
+}
+
+function renderFlow(root){
+  const tree0 = buildFlowTree(); // for the callout, before DOM exists
+  const left = tree0.leftover;
+  const isActual = flowDataset === 'actual';
+  let calloutClass = 'neutral';
+  let calloutText = isActual
+    ? "Every dollar of income tracked so far has a category assigned."
+    : "Every dollar of income is currently allocated to expenses and savings.";
+  if(left < -0.004){
+    calloutClass = 'warn';
+    calloutText = isActual
+      ? `⚠ You've actually spent ${fmt(-left)}/mo more than your income — look for the red band on the Income bar below.`
+      : `⚠ Over budget by ${fmt(-left)}/mo — expenses and savings together add up to more than you're bringing in. Look for the red band and dashed line on the Income bar below.`;
+  } else if(left > 0.004){
+    calloutClass = 'good';
+    calloutText = isActual
+      ? `💰 ${fmt(left)}/mo of income hasn't shown up as actual spending yet.`
+      : `💰 ${fmt(left)}/mo left over after expenses and savings — not yet assigned anywhere.`;
+  }
+
+  root.innerHTML = `
+    <h2>Money flow</h2>
+    <p class="lede">See income split into bills and savings, sized exactly to the dollar. Hover any bar for a quick look, or click a category or person to break it down further.</p>
+    <div class="flow-callout ${calloutClass}">${calloutText}</div>
+    <div class="flow-controls">
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <div class="freq-toggle" id="flowDatasetToggle">
+          <button data-d="budgeted" class="${flowDataset==='budgeted'?'active':''}">Budgeted</button>
+          <button data-d="actual" class="${flowDataset==='actual'?'active':''}">Actual</button>
+        </div>
+        ${!isActual ? `<div class="freq-toggle" id="flowModeToggle">
+          <button data-m="category" class="${flowMode==='category'?'active':''}">By category</button>
+          <button data-m="person" class="${flowMode==='person'?'active':''}">By person</button>
+        </div>` : ''}
+      </div>
+      <span class="hint">Bar height = dollar amount · scroll or zoom if it runs wide</span>
+    </div>
+    <div class="flow-layout">
+      <div class="flow-chart-wrap" id="flowChartWrap"></div>
+      <div class="flow-aside">
+        <div class="flow-legend" id="flowLegend"></div>
+        <div class="flow-panel" id="flowPanel"></div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('flowDatasetToggle').querySelectorAll('button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      flowDataset = btn.dataset.d;
+      flowMode = 'category';
+      flowExpandedId = null;
+      flowSelectedId = 'income';
+      render();
+    });
+  });
+  const modeToggle = document.getElementById('flowModeToggle');
+  if(modeToggle){
+    modeToggle.querySelectorAll('button').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        flowMode = btn.dataset.m;
+        flowExpandedId = null;
+        flowSelectedId = 'income';
+        render();
+      });
+    });
+  }
+
+  const tree = buildFlowTree();
+  const chartWrap = document.getElementById('flowChartWrap');
+  const tooltipDiv = document.createElement('div');
+  tooltipDiv.className = 'flow-tooltip';
+  tooltipDiv.id = 'flowTooltip';
+  chartWrap.appendChild(tooltipDiv);
+  chartWrap.appendChild(drawFlowDiagram(tree));
+  renderFlowLegend(tree);
+  renderFlowPanel(tree);
+}
+
+function renderFlowLegend(tree){
+  const legend = document.getElementById('flowLegend');
+  const items = flowLegendItems(tree);
+  legend.innerHTML = `<h4>Legend</h4><ul>${items.map(it=>
+    `<li><span class="swatch" style="background:${it.color}"></span>${escapeHtml(it.label)}</li>`
+  ).join('')}</ul>`;
+}
+
+function renderFlowPanel(tree){
+  const panel = document.getElementById('flowPanel');
+  const info = flowNodeInfo(tree, flowSelectedId) || flowNodeInfo(tree, 'income');
+  const income = tree.root.value || 1;
+  const pct = info.value / income;
+  panel.innerHTML = `
+    <h4>${escapeHtml(info.label)}</h4>
+    <div class="amt-big">${fmt(info.value)}<span style="font-size:12px; color:var(--ink-soft); font-weight:500;"> /mo</span></div>
+    <div class="pct-line">${pct2(pct)} of monthly income</div>
+    ${info.note ? `<p style="font-size:12px; color:var(--warn); margin:0 0 10px;">${escapeHtml(info.note)}</p>` : ''}
+    ${info.rows.length ? `<div class="hint" style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">${escapeHtml(info.rowsLabel)}</div>
+    <ul class="sub-list">${info.rows.map(r=> `<li><span class="n">${escapeHtml(r.label)}</span><span class="v">${fmt(r.value)}</span></li>`).join('')}</ul>` : ''}
+    <div class="flow-hint">${flowExpandedId ? 'Click the highlighted bar again to collapse it.' : 'Click a category or person bar to see its individual items.'}</div>
+  `;
+}
+
+function pct2(p){ return (p*100).toFixed(1)+'%'; }
+
+function measureTextWidth(text, fontPx, weight){
+  if(!measureTextWidth._ctx){
+    try{
+      const c = document.createElement('canvas');
+      measureTextWidth._ctx = c.getContext && c.getContext('2d');
+    }catch(e){ measureTextWidth._ctx = null; }
+  }
+  const ctx = measureTextWidth._ctx;
+  if(!ctx) return text.length * fontPx * 0.56; // fallback estimate if canvas 2D isn't available
+  ctx.font = `${weight||600} ${fontPx}px Inter, sans-serif`;
+  return ctx.measureText(text).width;
+}
+
+function drawFlowDiagram(tree){
+  const ns = 'http://www.w3.org/2000/svg';
+  const expanded = !!tree.expandedNode;
+
+  const barW = 24;              // fixed cross-section width of every bar
+  const topPad = 22, bottomPad = 22, leftPad = 26, rightPad = 40;
+  const headerBlockH = 26;      // dedicated space above every bar for its two-line header
+  const rowGap = 15;            // vertical breathing room between rows
+  const minRunLen = 100, maxRunLen = 260; // horizontal travel: big values are short, small values are long
+  const baselineIncomeH = 230;  // Income bar's thickness at its own true value
+  const scale = baselineIncomeH / (tree.root.value || 1);
+  const minHitH = 8;
+
+  function runLength(value, minV, maxV){
+    if(maxV <= minV) return (minRunLen+maxRunLen)/2;
+    const t = (value-minV)/(maxV-minV); // 1 = biggest value in this tier
+    return maxRunLen - t*(maxRunLen-minRunLen);
+  }
+
+  // ---- thickness (bar height) is strictly proportional to value; a parent only grows
+  // beyond its own proportional thickness if its children's rows need more room ----
+  function footprintOf(nodes){
+    if(!nodes.length) return 0;
+    return nodes.reduce((s,n)=> s + headerBlockH + n.h, 0) + rowGap*(nodes.length-1);
+  }
+  if(expanded) tree.col3.forEach(n=>{ n.h = Math.max(n.value*scale, 0.5); });
+  tree.col2.forEach(n=>{
+    n.h = Math.max(n.value*scale, 0.5);
+    if(expanded && n.id===flowExpandedId) n.h = Math.max(n.h, footprintOf(tree.col3));
+  });
+  tree.col1.forEach(p=>{
+    const kids = tree.col2.filter(n=> n.parent===p.id);
+    p.h = Math.max(p.value*scale, footprintOf(kids));
+  });
+  const rootNode = tree.root;
+  const rootTrueH = Math.max(rootNode.value*scale, 0.5); // proportional height before any header-space growth
+  // Income's own header sits level with the first column's header, so its bar only needs
+  // to span from that first bar down to the last one (the footprint minus one header).
+  rootNode.h = Math.max(rootTrueH, footprintOf(tree.col1) - headerBlockH);
+
+  // ---- horizontal placement: each node gets its own run-length based on its value,
+  // so bars in the same tier don't need to line up with each other ----
+  // Income gets a header block above its bar like every other node; without one its
+  // label position was undefined and the label was drawn off the top of the chart.
+  rootNode.x = leftPad; rootNode.headerY = topPad; rootNode.y = topPad + headerBlockH;
+  const col1Vals = tree.col1.map(n=>n.value);
+  tree.col1.forEach(n=>{ n.x = rootNode.x + barW + runLength(n.value, Math.min(...col1Vals), Math.max(...col1Vals)); });
+  const col2Vals = tree.col2.map(n=>n.value);
+  tree.col2.forEach(n=>{
+    const parent = tree.col1.find(p=>p.id===n.parent);
+    n.x = (parent?parent.x:rootNode.x) + barW + runLength(n.value, Math.min(...col2Vals), Math.max(...col2Vals));
+  });
+  if(expanded){
+    const col3Vals = tree.col3.map(n=>n.value);
+    tree.col3.forEach(n=>{
+      n.x = tree.expandedNode.x + barW + runLength(n.value, Math.min(...col3Vals), Math.max(...col3Vals));
+    });
+  }
+
+  // ---- vertical stacking within each tier: header block, then bar, then gap ----
+  function stackVertical(nodes, startY){
+    let y = startY;
+    nodes.forEach(n=>{
+      n.headerY = y;
+      n.y = y + headerBlockH;
+      y = n.y + n.h + rowGap;
+    });
+  }
+  stackVertical(tree.col1, topPad);
+  stackVertical(tree.col2, topPad);
+  if(expanded) stackVertical(tree.col3, tree.expandedNode.headerY);
+
+  const col1Bottom = tree.col1.length ? tree.col1[tree.col1.length-1].y + tree.col1[tree.col1.length-1].h : topPad;
+  const col2Bottom = tree.col2.length ? tree.col2[tree.col2.length-1].y + tree.col2[tree.col2.length-1].h : topPad;
+  const col3Bottom = expanded && tree.col3.length ? tree.col3[tree.col3.length-1].y + tree.col3[tree.col3.length-1].h : 0;
+  // over-budget is a dollar comparison, not a pixel one — the header-space growth above
+  // can make the Income bar taller without that meaning income was actually exceeded
+  const totalCol1Value = tree.col1.reduce((s,n)=> s+n.value, 0);
+  const overBudget = totalCol1Value > rootNode.value + 0.004;
+  const boundaryY = rootNode.y + rootTrueH;
+
+  // ---- measure every header so the canvas is always wide enough — nothing gets clipped ----
+  function headerLines(n){
+    return [n.label, fmt(n.value) + '/mo · ' + pct2(n.value/(tree.root.value||1))];
+  }
+  let maxRight = rootNode.x + barW + measureTextWidth(rootNode.label, 13, 700) + 12;
+  [rootNode, ...tree.col1, ...tree.col2, ...(expanded?tree.col3:[])].forEach(n=>{
+    const [l1,l2] = headerLines(n);
+    const w = Math.max(measureTextWidth(l1,12.5,700), measureTextWidth(l2,11,500));
+    maxRight = Math.max(maxRight, n.x + Math.max(barW, w) + 4);
+  });
+
+  const H = Math.max(rootNode.y + rootNode.h, col1Bottom, col2Bottom, col3Bottom) + bottomPad;
+  const W = maxRight + rightPad;
+
+  const svg = document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.setAttribute('width', W); svg.setAttribute('height', H);
+  svg.style.display='block';
+
+  function assignSourceOffsets(parentNode, children){
+    let cum = parentNode.y;
+    children.forEach(c=>{ c._srcY0 = cum; c._srcY1 = cum + c.h; cum = c._srcY1 + rowGap; });
+  }
+  assignSourceOffsets(rootNode, tree.col1);
+  ['expenses','savings'].forEach(pid=>{
+    const parent = tree.col1.find(n=>n.id===pid);
+    const kids = tree.col2.filter(n=> n.parent===pid);
+    if(parent) assignSourceOffsets(parent, kids);
+  });
+  if(expanded && tree.expandedNode) assignSourceOffsets(tree.expandedNode, tree.col3);
+
+  function ribbon(x1,y1a,y1b, x2,y2a,y2b, color){
+    const midX = (x1+x2)/2;
+    const p = document.createElementNS(ns,'path');
+    p.setAttribute('d', `M${x1},${y1a} C${midX},${y1a} ${midX},${y2a} ${x2},${y2a} L${x2},${y2b} C${midX},${y2b} ${midX},${y1b} ${x1},${y1b} Z`);
+    p.setAttribute('fill', color); p.setAttribute('fill-opacity', '0.4');
+    return p;
+  }
+
+  const ribbonLayer = document.createElementNS(ns,'g');
+  const nodeLayer = document.createElementNS(ns,'g');
+  const overlayLayer = document.createElementNS(ns,'g');
+  const warnLayer = document.createElementNS(ns,'g');   // over-budget label, drawn on top
+
+  tree.col1.forEach(n=> ribbonLayer.appendChild(ribbon(rootNode.x+barW, n._srcY0, n._srcY1, n.x, n.y, n.y+n.h, n.color)));
+  tree.col2.forEach(n=>{
+    const parent = tree.col1.find(p=>p.id===n.parent);
+    if(parent) ribbonLayer.appendChild(ribbon(parent.x+barW, n._srcY0, n._srcY1, n.x, n.y, n.y+n.h, n.color));
+  });
+  if(expanded) tree.col3.forEach(n=> ribbonLayer.appendChild(ribbon(tree.expandedNode.x+barW, n._srcY0, n._srcY1, n.x, n.y, n.y+n.h, n.color)));
+
+  const highlightSet = flowHighlightSet(tree);
+  const tooltip = document.getElementById('flowTooltip');
+
+  function tooltipHTML(n){
+    const pctIncome = pct2(n.value/(tree.root.value||1));
+    const lines = [`${fmt(n.value)}/mo · ${fmt(n.value*12)}/yr`, pctIncome + ' of income'];
+    if(n.id==='income'){
+      const earners = state.income.earners.filter(p=>p.monthly>0);
+      if(earners.length) lines.push(earners.map(p=> p.name+' '+fmt(p.monthly)).join(' · '));
+    } else if(n.id==='expenses' || n.id==='savings'){
+      const kids = tree.col2.filter(k=> k.parent===n.id);
+      const noun = n.id==='expenses' ? (flowMode==='category' ? 'categories' : 'people') : ((flowMode==='person' && state.users.length) ? 'people' : 'goals');
+      lines.push(kids.length + ' ' + noun);
+    } else if(n.kind==='category' || n.kind==='person'){
+      const items = tree.isActual ? itemsForCategoryActual(n.key) : (n.kind==='category' ? itemsForCategory(n.key) : itemsForPerson(n.key));
+      const itemOf = (it)=> tree.isActual ? Number(it.amount)||0 : monthlyOf(it);
+      lines.push(items.length + ' item' + (items.length===1?'':'s'));
+      if(items[0]) lines.push('Largest: ' + items[0].item + ' (' + fmt(itemOf(items[0])) + ')');
+      lines.push(pct2(n.value/((tree.isActual?totalActual():totalMonthlyExpenses())||1)) + ' of all ' + (tree.isActual?'actual spending':'expenses'));
+    } else if(n.kind==='saver'){
+      const shares = saverShares(n.key);
+      lines.push(shares.length + ' goal' + (shares.length===1?'':'s'));
+      if(shares[0]) lines.push('Largest: ' + shares[0].bucket.name + ' (' + fmt(shares[0].amount) + ')');
+      lines.push(pct2(n.value/(totalMonthlySavings()||1)) + ' of all savings');
+    } else if(n.kind==='saver-unallocated'){
+      lines.push('A goal\'s split adds up to less than 100%');
+    } else if(n.kind==='bucket'){
+      const b = state.savings.buckets.find(x=> 'bucket:'+x.id===n.id);
+      if(b){
+        lines.push('Target ' + fmt(b.target) + ' · saved ' + fmt(b.start||0));
+        if(b.monthly>0 && b.target>(b.start||0)) lines.push(Math.ceil((b.target-(b.start||0))/b.monthly) + ' months to goal');
+        else if(b.target<=(b.start||0)) lines.push('Goal reached');
+      }
+    } else if(n.parent && tree.expandedNode){
+      lines.push(pct2(n.value/(tree.expandedNode.value||1)) + ' of ' + tree.expandedNode.label);
+    }
+    return `<div class="tt-name">${escapeHtml(n.label)}</div>` + lines.map(l=> `<div class="tt-sub">${escapeHtml(l)}</div>`).join('');
+  }
+
+  function showTooltip(evt, n){
+    if(!tooltip) return;
+    const wrap = document.getElementById('flowChartWrap');
+    const wrapRect = wrap.getBoundingClientRect();
+    tooltip.innerHTML = tooltipHTML(n);
+    tooltip.style.left = (evt.clientX - wrapRect.left + wrap.scrollLeft + 14) + 'px';
+    tooltip.style.top = (evt.clientY - wrapRect.top + wrap.scrollTop + 14) + 'px';
+    tooltip.classList.add('show');
+  }
+  function moveTooltip(evt){
+    if(!tooltip || !tooltip.classList.contains('show')) return;
+    const wrap = document.getElementById('flowChartWrap');
+    const wrapRect = wrap.getBoundingClientRect();
+    tooltip.style.left = (evt.clientX - wrapRect.left + wrap.scrollLeft + 14) + 'px';
+    tooltip.style.top = (evt.clientY - wrapRect.top + wrap.scrollTop + 14) + 'px';
+  }
+  function hideTooltip(){ if(tooltip) tooltip.classList.remove('show'); }
+
+  function drawNode(n, clickable){
+    const g = document.createElementNS(ns,'g');
+    g.setAttribute('class', 'flow-node' + (highlightSet && !highlightSet.has(n.id) ? ' flow-dim' : ''));
+
+    const [l1,l2] = headerLines(n);
+    const headerW = Math.max(barW, measureTextWidth(l1,12.5,700), measureTextWidth(l2,11,500));
+    const padY = Math.max((minHitH - n.h)/2, 0);
+    const hit = document.createElementNS(ns,'rect');
+    hit.setAttribute('x', n.x - 4); hit.setAttribute('y', n.headerY - 2);
+    hit.setAttribute('width', headerW + 8); hit.setAttribute('height', (n.y + n.h) - n.headerY + padY + 4);
+    hit.setAttribute('fill', 'transparent');
+    g.appendChild(hit);
+
+    const label1 = document.createElementNS(ns,'text');
+    label1.setAttribute('x', n.x); label1.setAttribute('y', n.headerY + 11);
+    label1.setAttribute('font-size','12.5'); label1.setAttribute('font-weight','700');
+    label1.setAttribute('fill', resolveVar('var(--ink)'));
+    label1.textContent = l1;
+    g.appendChild(label1);
+
+    const label2 = document.createElementNS(ns,'text');
+    label2.setAttribute('x', n.x); label2.setAttribute('y', n.headerY + 22);
+    label2.setAttribute('font-size','11'); label2.setAttribute('font-weight','500');
+    label2.setAttribute('fill', resolveVar('var(--ink-soft)'));
+    label2.textContent = l2;
+    g.appendChild(label2);
+
+    const rect = document.createElementNS(ns,'rect');
+    rect.setAttribute('class','flow-bar');
+    rect.setAttribute('x', n.x); rect.setAttribute('y', n.y);
+    rect.setAttribute('width', barW); rect.setAttribute('height', n.h);
+    rect.setAttribute('rx', 2); rect.setAttribute('fill', n.color);
+    if(n.id === flowExpandedId){ rect.setAttribute('stroke', resolveVar('var(--ink)')); rect.setAttribute('stroke-width','1.5'); }
+    g.appendChild(rect);
+
+    g.addEventListener('mouseenter', (evt)=> showTooltip(evt, n));
+    g.addEventListener('mousemove', moveTooltip);
+    g.addEventListener('mouseleave', hideTooltip);
+
+    if(clickable){
+      g.addEventListener('click', ()=>{
+        flowSelectedId = n.id;
+        if(n.kind==='category' || n.kind==='person' || n.kind==='saver'){
+          flowExpandedId = (flowExpandedId===n.id) ? null : n.id;
+        } else if(n.id==='expenses' || n.id==='savings'){
+          flowExpandedId = null;
+        }
+        hideTooltip();
+        render();
+      });
+    }
+    return g;
+  }
+
+  nodeLayer.appendChild(drawNode(rootNode, true));
+  tree.col1.forEach(n=> nodeLayer.appendChild(drawNode(n, true)));
+  tree.col2.forEach(n=> nodeLayer.appendChild(drawNode(n, true)));
+  if(expanded) tree.col3.forEach(n=> nodeLayer.appendChild(drawNode(n, false)));
+
+  if(overBudget){
+    const band = document.createElementNS(ns,'rect');
+    band.setAttribute('x', 0); band.setAttribute('y', boundaryY);
+    band.setAttribute('width', W); band.setAttribute('height', Math.max(col1Bottom - boundaryY, 0));
+    band.setAttribute('fill', resolveVar('var(--warn)')); band.setAttribute('fill-opacity','0.08');
+    overlayLayer.appendChild(band);
+
+    const dash = document.createElementNS(ns,'line');
+    dash.setAttribute('x1', 4); dash.setAttribute('x2', W-4);
+    dash.setAttribute('y1', boundaryY); dash.setAttribute('y2', boundaryY);
+    dash.setAttribute('stroke', resolveVar('var(--warn)')); dash.setAttribute('stroke-width','1.5');
+    dash.setAttribute('stroke-dasharray','5 4');
+    overlayLayer.appendChild(dash);
+
+    // Positioned on the left, away from where column headers cluster on the right,
+    // with a solid backing behind it so it stays legible regardless of what's beneath.
+    const warnText = '⚠ ' + fmt(-tree.leftover) + ' over budget';
+    const warnW = measureTextWidth(warnText, 11.5, 700);
+    // Just right of the Income bar (not on top of it), and drawn above everything else.
+    const warnX = rootNode.x + barW + 8, warnY = boundaryY - 8;
+    const halo = document.createElementNS(ns,'rect');
+    halo.setAttribute('x', warnX - 5); halo.setAttribute('y', warnY - 13);
+    halo.setAttribute('width', warnW + 10); halo.setAttribute('height', 18);
+    halo.setAttribute('rx', 3); halo.setAttribute('fill', resolveVar('var(--paper-raised)'));
+    halo.setAttribute('fill-opacity', '0.92');
+    warnLayer.appendChild(halo);
+
+    const warnLabel = document.createElementNS(ns,'text');
+    warnLabel.setAttribute('x', warnX); warnLabel.setAttribute('y', warnY);
+    warnLabel.setAttribute('font-size','11.5'); warnLabel.setAttribute('font-weight','700');
+    warnLabel.setAttribute('fill', resolveVar('var(--warn)'));
+    warnLabel.textContent = warnText;
+    warnLayer.appendChild(warnLabel);
+  }
+
+  svg.appendChild(overlayLayer);
+  svg.appendChild(ribbonLayer);
+  svg.appendChild(nodeLayer);
+  svg.appendChild(warnLayer);
+  return svg;
+}
+
+function flowHighlightSet(tree){
+  if(!flowExpandedId) return null;
+  const set = new Set(['income', flowExpandedId]);
+  const en = tree.expandedNode;
+  if(en) set.add(en.parent);
+  tree.col3.forEach(n=> set.add(n.id));
+  return set;
+}
+
+/* ============================= SETTINGS ============================= */
+
+function renderSettings(root){
+  root.innerHTML = `
+    <h2>Settings</h2>
+    <p class="lede">Manage the people in your household, the expense categories used across the ledger, and move data in and out as Excel files.</p>
+
+    <div class="block-head"><h3>Household</h3><span class="hint">Signed in as ${escapeHtml(session.user.email||'')}</span></div>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 6px;">Share this code so your partner can join and see the same ledger.</p>
+    <div class="invite-box"><code id="inviteCodeText">${escapeHtml(household.invite_code)}</code><button class="btn small ghost" id="copyInviteBtn">Copy</button><button class="btn small ghost" id="newInviteBtn" title="Replace this code. The old one stops working.">New code</button></div>
+    <div class="io-status" id="inviteStatus"></div>
+
+    <div class="field" style="max-width:360px; margin-top:16px;">
+      <label>Budget name</label>
+      <input type="text" id="budgetNameInput" value="${escapeHtml(household.name||'')}" placeholder="e.g. Smith Family Budget">
+    </div>
+
+    <button class="btn small ghost" id="loadSampleBtn" style="margin-top:14px;">Load sample data</button>
+
+    <div class="block-head" style="margin-top:32px;"><h3>Import &amp; export</h3><span class="hint">.xlsx files with Expenses, Income and Savings tabs</span></div>
+    <div class="io-grid">
+      <div class="io-card">
+        <h4>Blank template</h4>
+        <p>A spreadsheet with the right headers and columns, empty and ready for you or someone else to fill in.</p>
+        <button class="btn small ghost" id="exportTemplateBtn">Download blank template</button>
+      </div>
+      <div class="io-card">
+        <h4>Current data</h4>
+        <p>Every expense, earner and savings goal currently in the ledger, exported to Excel.</p>
+        <button class="btn small ghost" id="exportDataBtn">Download current data</button>
+      </div>
+      <div class="io-card">
+        <h4>Import from Excel</h4>
+        <p>Choose a filled-in template. Rows matching an existing item (by category + item, earner name, or goal name) update it; new rows are added.</p>
+        <input type="file" id="importFile" accept=".xlsx,.xls">
+      </div>
+    </div>
+    <div class="io-status" id="ioStatus"></div>
+
+    <div class="block-head" style="margin-top:32px;"><h3>Custom export</h3><span class="hint">Pick exactly what to include, in one formatted file</span></div>
+    <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 14px;">Every row keeps its internal ID, so the same expense, entry or scenario item can be traced consistently even across sheets.</p>
+    <div class="export-panel">
+      <div class="field" style="margin-bottom:14px;">
+        <label>File name</label>
+        <input type="text" id="exportNameInput" value="${escapeHtml(defaultExportName())}">
+      </div>
+      <div class="export-checks" id="exportChecks">
+        ${exportableSets().map(s=> `
+          <label class="export-check">
+            <input type="checkbox" value="${s.key}" checked>
+            <span>${escapeHtml(s.label)}</span>
+          </label>
+        `).join('')}
+      </div>
+      <button class="btn small" id="exportCustomBtn" style="margin-top:14px;">Export selected</button>
+    </div>
+    <div class="io-status" id="customExportStatus"></div>
+
+    <div class="block-head" style="margin-top:32px;"><h3>People</h3><span class="hint">Selectable under "Who" on each expense, alongside "All"</span></div>
+    <div id="userList"></div>
+    <div class="add-inline">
+      <input type="text" id="newUserInput" placeholder="Add a person, e.g. Sam">
+      <button class="btn small ghost" id="addUserBtn">+ Add person</button>
+    </div>
+
+    <div class="block-head" style="margin-top:32px;"><h3>Categories</h3><span class="hint">Also editable directly from the Expenses tab</span></div>
+    <div id="catList"></div>
+    <div class="add-inline">
+      <input type="text" id="newCatInput2" placeholder="Add a category, e.g. Childcare">
+      <button class="btn small ghost" id="addCatBtn2">+ Add category</button>
+    </div>
+
+    <div class="block-head" style="margin-top:32px;"><h3>Account</h3><span class="hint">Signed in as ${escapeHtml(session.user.email||'')}</span></div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px;">
+      <button class="btn small ghost" id="settingsSignOutBtn">Sign out</button>
+      <a class="btn small ghost" href="privacy.html" target="_blank" rel="noopener" data-public-page="privacy.html" style="text-decoration:none;">Privacy policy</a>
+    </div>
+    <div class="field" style="max-width:360px; margin-bottom:18px;">
+      <label for="idleSelect">Sign out automatically after inactivity</label>
+      <select id="idleSelect" style="width:100%; padding:8px 10px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff;">
+        ${Array.from({length:12},(_,i)=>(i+1)*5).map(m=> `<option value="${m}" ${m===idleMinutes()?'selected':''}>${m} minutes${m===15?' (default)':''}</option>`).join('')}
+      </select>
+      <p style="font-size:12px; color:var(--ink-soft); margin:6px 0 0;">Applies to this device only.${biometricEnabled() ? ' With Face ID unlock on, the app locks instead of signing you out.' : ''}</p>
+    </div>
+    <div id="bioSetting" style="max-width:420px; margin-bottom:18px;"></div>
+    <div class="danger-zone">
+      <h4>Delete account</h4>
+      <p>Permanently deletes your sign-in and removes you from this household. If you're the only member, the household and all of its budget data are deleted too. If someone else is still a member, the household stays for them. This can't be undone.</p>
+      <div id="deleteStep1"><button class="btn small danger" id="deleteAccountBtn">Delete my account…</button></div>
+      <div id="deleteStep2" style="display:none;">
+        <p style="margin-bottom:8px;">Type <strong>DELETE</strong> to confirm.</p>
+        <div class="add-inline" style="max-width:360px; margin-top:0;">
+          <input type="text" id="deleteConfirmInput" autocomplete="off" autocapitalize="characters">
+          <button class="btn small danger" id="deleteConfirmBtn">Delete permanently</button>
+          <button class="btn small ghost" id="deleteCancelBtn">Cancel</button>
+        </div>
+        <div class="io-status" id="deleteStatus"></div>
+      </div>
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-soft); margin:22px 0 0;">Money Manifest version ${APP_VERSION}</p>
+  `;
+
+  document.getElementById('settingsSignOutBtn').addEventListener('click', signOutEverywhere);
+  renderBioSetting();
+  document.getElementById('idleSelect').addEventListener('change', (e)=>{
+    try{ localStorage.setItem(IDLE_KEY, e.target.value); }catch(err){}
+    markActive(true);
+  });
+  document.getElementById('deleteAccountBtn').addEventListener('click', ()=>{
+    document.getElementById('deleteStep1').style.display='none';
+    document.getElementById('deleteStep2').style.display='';
+    document.getElementById('deleteConfirmInput').focus();
+  });
+  document.getElementById('deleteCancelBtn').addEventListener('click', ()=>{
+    document.getElementById('deleteStep2').style.display='none';
+    document.getElementById('deleteStep1').style.display='';
+    document.getElementById('deleteConfirmInput').value='';
+  });
+  document.getElementById('deleteConfirmBtn').addEventListener('click', deleteMyAccount);
+
+  document.getElementById('budgetNameInput').addEventListener('change', async (e)=>{
+    const newName = e.target.value.trim() || 'Our household';
+    state.budgetName = newName;
+    household.name = newName;
+    try{
+      const { error } = await sb.from('households').update({ name: newName }).eq('id', household.id);
+      if(error){ console.error('Could not update household name', error); alert('Could not save the new name — check your connection and try again.'); }
+    }catch(err){ console.error('Could not update household name', err); alert('Could not save the new name — check your connection and try again.'); }
+    const nameInput = document.getElementById('exportNameInput');
+    if(nameInput) nameInput.value = defaultExportName();
+  });
+
+  document.getElementById('exportTemplateBtn').addEventListener('click', ()=> exportWorkbook(false));
+  document.getElementById('exportDataBtn').addEventListener('click', ()=> exportWorkbook(true));
+  document.getElementById('importFile').addEventListener('change', (ev)=>{
+    const file = ev.target.files[0];
+    if(file) importWorkbook(file);
+    ev.target.value = '';
+  });
+
+  document.getElementById('exportCustomBtn').addEventListener('click', ()=>{
+    const selected = [...document.querySelectorAll('#exportChecks input:checked')].map(c=>c.value);
+    const name = document.getElementById('exportNameInput').value.trim() || defaultExportName();
+    exportCustomWorkbook(selected, name);
+  });
+
+  document.getElementById('loadSampleBtn').addEventListener('click', loadSampleData);
+  document.getElementById('newInviteBtn').addEventListener('click', async ()=>{
+    if(!confirm('Create a new invite code? The current code will stop working. People already in your household stay in it.')) return;
+    const status = document.getElementById('inviteStatus');
+    const { data, error } = await sb.rpc('regenerate_invite_code', { p_household: household.id });
+    if(error || !data){
+      status.textContent = householdRpcError(error, 'Could not create a new code. Please try again.');
+      status.className = 'io-status show err';
+      return;
+    }
+    household.invite_code = data;
+    document.getElementById('inviteCodeText').textContent = data;
+    status.textContent = 'New invite code created. The old one no longer works.';
+    status.className = 'io-status show ok';
+  });
+  document.getElementById('copyInviteBtn').addEventListener('click', ()=>{
+    const btn = document.getElementById('copyInviteBtn');
+    navigator.clipboard.writeText(household.invite_code).then(()=>{
+      btn.textContent = 'Copied!';
+      setTimeout(()=>{ btn.textContent = 'Copy'; }, 1500);
+    }).catch(err=>{
+      // Clipboard access can fail silently (browser permissions, non-HTTPS context) —
+      // fall back to visibly showing the code so the user can select/copy it manually.
+      console.error('Clipboard write failed', err);
+      btn.textContent = 'Copy failed — code shown above';
+      setTimeout(()=>{ btn.textContent = 'Copy'; }, 2500);
+    });
+  });
+
+  const userList = document.getElementById('userList');
+  state.users.forEach((u,i)=>{
+    const count = state.expenses.filter(e=> e.person===u).length;
+    const hasOverride = !!state.personColors[u];
+    const hex = hasOverride ? state.personColors[u] : rgbToHex(colorForPerson(u,i));
+    const row = document.createElement('div');
+    row.className = 'settings-row cat-row';
+    row.innerHTML = `
+      <input type="color" value="${hex}" data-color-for="${escapeHtml(u)}" title="Pick a color for ${escapeHtml(u)}">
+      <input type="text" value="${escapeHtml(u)}" data-old="${escapeHtml(u)}">
+      <span class="count">${count} expense${count===1?'':'s'}</span>
+      ${hasOverride ? `<button class="reset-color" data-resetusercolor="${escapeHtml(u)}" title="Reset to default color">reset</button>` : '<span></span>'}
+      <button class="icon-btn" data-deluser="${escapeHtml(u)}" title="Remove">✕</button>
+    `;
+    userList.appendChild(row);
+  });
+  if(state.users.length===0) userList.innerHTML = '<div class="empty">No people added yet — the "Who" field will just offer "All".</div>';
+
+  userList.querySelectorAll('input[type=text]').forEach(inp=>{
+    inp.addEventListener('change', ()=> renameUser(inp.dataset.old, inp.value.trim()));
+  });
+  userList.querySelectorAll('input[type=color]').forEach(inp=>{
+    inp.addEventListener('input', ()=> setPersonColor(inp.dataset.colorFor, inp.value));
+  });
+  userList.querySelectorAll('[data-resetusercolor]').forEach(btn=>{
+    btn.addEventListener('click', ()=> resetPersonColor(btn.dataset.resetusercolor));
+  });
+  userList.querySelectorAll('[data-deluser]').forEach(btn=>{
+    btn.addEventListener('click', ()=> deleteUser(btn.dataset.deluser));
+  });
+  document.getElementById('addUserBtn').addEventListener('click', ()=>{
+    const input = document.getElementById('newUserInput');
+    const name = input.value.trim();
+    if(!name) return;
+    addUser(name);
+  });
+
+  const catList = document.getElementById('catList');
+  allCategories().forEach(cat=>{
+    const count = state.expenses.filter(e=> (e.category||'').toUpperCase()===cat).length;
+    const hasOverride = !!state.categoryColors[cat];
+    const hex = hasOverride ? state.categoryColors[cat] : rgbToHex(resolveVar(colorFor(cat)));
+    const row = document.createElement('div');
+    row.className = 'settings-row cat-row';
+    row.innerHTML = `
+      <input type="color" value="${hex}" data-color-for="${escapeHtml(cat)}" title="Pick a color for ${escapeHtml(titleCase(cat))}">
+      <input type="text" value="${escapeHtml(titleCase(cat))}" data-old="${escapeHtml(cat)}">
+      <span class="count">${count} expense${count===1?'':'s'}</span>
+      ${hasOverride ? `<button class="reset-color" data-resetcolor="${escapeHtml(cat)}" title="Reset to default color">reset</button>` : '<span></span>'}
+      <button class="icon-btn" data-delcat="${escapeHtml(cat)}" title="Remove">✕</button>
+    `;
+    catList.appendChild(row);
+  });
+  if(allCategories().length===0) catList.innerHTML = '<div class="empty">No categories yet.</div>';
+
+  catList.querySelectorAll('input[type=text]').forEach(inp=>{
+    inp.addEventListener('change', ()=> renameCategory(inp.dataset.old, inp.value.trim()));
+  });
+  catList.querySelectorAll('input[type=color]').forEach(inp=>{
+    inp.addEventListener('input', ()=> setCategoryColor(inp.dataset.colorFor, inp.value));
+  });
+  catList.querySelectorAll('[data-resetcolor]').forEach(btn=>{
+    btn.addEventListener('click', ()=> resetCategoryColor(btn.dataset.resetcolor));
+  });
+  catList.querySelectorAll('[data-delcat]').forEach(btn=>{
+    btn.addEventListener('click', ()=> deleteCategory(btn.dataset.delcat));
+  });
+  document.getElementById('addCatBtn2').addEventListener('click', ()=>{
+    const input = document.getElementById('newCatInput2');
+    const name = input.value.trim();
+    if(!name) return;
+    addCategory(name);
+  });
+}
+
+function addUser(name){
+  if(!state.users.includes(name)) state.users.push(name);
+  saveState(); render();
+}
+function renameUser(oldName, newName){
+  if(!newName || newName===oldName){ render(); return; }
+  state.users = state.users.map(u=> u===oldName ? newName : u);
+  state.expenses.forEach(e=>{ if(e.person===oldName) e.person = newName; });
+  state.savings.buckets.forEach(b=>{
+    if(b.split && b.split[oldName]!==undefined){ b.split[newName] = b.split[oldName]; delete b.split[oldName]; }
+  });
+  if(state.personColors[oldName] && !state.personColors[newName]){
+    state.personColors[newName] = state.personColors[oldName];
+    delete state.personColors[oldName];
+  }
+  saveState(); render();
+}
+function deleteUser(name){
+  state.users = state.users.filter(u=> u!==name);
+  state.expenses.forEach(e=>{ if(e.person===name) e.person = 'All'; });
+  // Drop them from any savings split; the remaining people's shares are left as they
+  // were, and the goal shows a warning until they add back up to 100%.
+  state.savings.buckets.forEach(b=>{ if(b.split) delete b.split[name]; });
+  delete state.personColors[name];
+  saveState(); render();
+}
+function setPersonColor(name, hex){
+  state.personColors[name] = hex;
+  saveState(); render();
+}
+function resetPersonColor(name){
+  delete state.personColors[name];
+  saveState(); render();
+}
+
+/* ============================= INIT ============================= */
+
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click', ()=> setView(tab.dataset.view));
+});
+
+document.getElementById('signOutBtn').addEventListener('click', signOutEverywhere);
+
+// In the iPhone app, a link that opens a new window would pass the app's internal
+// capacitor:// address to iOS, which offers to open some other Capacitor-built app.
+// Route those links through the in-app browser sheet instead.
+document.addEventListener('click', (ev)=>{
+  if(!isNativeApp()) return;
+  const a = ev.target.closest && ev.target.closest('a[href]');
+  if(!a) return;
+  const page = a.getAttribute('data-public-page');
+  let url = null;
+  if(page) url = new URL(page, PUBLIC_SITE_URL).href;
+  else if(/^https?:/i.test(a.href) && (a.target === '_blank' || new URL(a.href).origin !== location.origin)) url = a.href;
+  else if(a.target === '_blank') url = new URL(a.getAttribute('href'), PUBLIC_SITE_URL).href;
+  if(!url) return;
+  ev.preventDefault();
+  const Browser = nativePlugin('Browser');
+  if(Browser) Browser.open({ url, presentationStyle:'popover' });
+}, true);
+// The phone menu-bar icon sits right next to the tabs, so confirm before signing out.
+document.getElementById('railSignOutBtn').addEventListener('click', ()=>{
+  if(confirm('Sign out of Money Manifest?')) signOutEverywhere();
+});
+document.querySelector('.rail-brand').addEventListener('click', ()=> setView('home'));
+
+function loadSampleData(){
+  if(!confirm('Load the sample household into your ledger? This adds demo expenses, income and savings goals.')) return;
+  state.expenses = state.expenses.concat(JSON.parse(JSON.stringify(DEFAULT_EXPENSES)).map(e=> ({...e, id: uuid()})));
+  state.income.earners = state.income.earners.concat(JSON.parse(JSON.stringify(DEFAULT_INCOME)).earners.map(p=> ({...p, id: uuid()})));
+  state.savings.buckets = state.savings.buckets.concat(JSON.parse(JSON.stringify(DEFAULT_SAVINGS)).buckets.map(b=> ({...b, id: uuid()})));
+  DEFAULT_USERS.forEach(u=>{ if(!state.users.includes(u)) state.users.push(u); });
+  DEFAULT_CATEGORIES.forEach(c=>{ if(!state.categories.includes(c)) state.categories.push(c); });
+  saveState(); render();
+}
+
+async function renderBioSetting(){
+  const wrap = document.getElementById('bioSetting');
+  if(!wrap) return;
+  if(!isNativeApp()){
+    wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:0;">Face ID unlock is available in the iPhone app.</p>`;
+    return;
+  }
+  const info = await biometricInfo();
+  if(!document.getElementById('bioSetting')) return;   // Settings closed while checking
+  if(!info.available){
+    wrap.innerHTML = `<p style="font-size:12px; color:var(--ink-soft); margin:0;">Set up Face ID or a passcode in your phone's Settings to unlock Money Manifest with it.</p>`;
+    return;
+  }
+  const label = biometryLabel(info.type), on = biometricEnabled();
+  wrap.innerHTML = `
+    <label class="export-check" style="font-size:13.5px; font-weight:600;">
+      <input type="checkbox" id="bioToggle" ${on?'checked':''}> Unlock with ${escapeHtml(label)}
+    </label>
+    <p style="font-size:12px; color:var(--ink-soft); margin:4px 0 0 23px;">Asks for ${escapeHtml(label)} when you open the app, and locks the app after inactivity instead of signing you out.</p>
+    <div class="io-status" id="bioStatus"></div>`;
+  document.getElementById('bioToggle').addEventListener('change', async (e)=>{
+    const status = document.getElementById('bioStatus');
+    if(e.target.checked){
+      // Make sure it actually works on this phone before relying on it.
+      const r = await verifyBiometric('Turn on ' + label + ' for Money Manifest');
+      if(!r.ok){
+        e.target.checked = false;
+        if(!r.cancelled){ status.textContent = label + ' didn\'t work, so it hasn\'t been turned on.'; status.className = 'io-status show err'; }
+        return;
+      }
+      try{ localStorage.setItem(BIO_KEY, '1'); }catch(err){}
+      appUnlocked = true;
+    } else {
+      try{ localStorage.removeItem(BIO_KEY); }catch(err){}
+    }
+    render();
+  });
+}
+
+function currentProvider(){
+  try{ return (session && session.user && session.user.app_metadata && session.user.app_metadata.provider) || ''; }catch(e){ return ''; }
+}
+function rememberProviderForSignInScreen(provider){
+  try{ if(provider) sessionStorage.setItem('mm-last-provider', provider); }catch(e){}
+}
+
+async function signOutEverywhere(){
+  const provider = currentProvider();
+  if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  await sb.auth.signOut();
+  rememberProviderForSignInScreen(provider);
+  window.location.reload();
+}
+
+async function deleteMyAccount(){
+  const input = document.getElementById('deleteConfirmInput');
+  const status = document.getElementById('deleteStatus');
+  const btn = document.getElementById('deleteConfirmBtn');
+  const show = (msg, isErr)=>{ status.textContent = msg; status.className = 'io-status show ' + (isErr?'err':'ok'); };
+  if(input.value.trim().toUpperCase() !== 'DELETE'){ show('Type DELETE to confirm.', true); return; }
+  btn.disabled = true; show('Deleting…', false);
+  // Deleting a sign-in needs elevated rights the browser key doesn't have, so this
+  // calls a database function (delete_my_account, in schema.sql) that runs with
+  // those rights but can only ever act on the signed-in user's own account.
+  const { error } = await sb.rpc('delete_my_account');
+  if(error){
+    console.error('Account deletion failed', error);
+    btn.disabled = false;
+    show('Could not delete your account: ' + error.message, true);
+    return;
+  }
+  if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  try{ localStorage.removeItem(BIO_KEY); }catch(e){}
+  try{ await sb.auth.signOut(); }catch(e){ /* the session's user no longer exists */ }
+  household = null;
+  window.location.reload();
+}
+
+// ============================ Face ID / fingerprint unlock (iPhone app only) ============================
+// Uses @capgo/capacitor-native-biometric. You sign in once with Apple/Google; after that,
+// opening the app (and returning after the inactivity timeout) asks for Face ID instead
+// of a full sign-in. Off by default, per device. Not offered on the website, where a
+// browser-side check would be easy to bypass.
+const BIO_KEY = 'mm-biometric';
+let appUnlocked = false;   // has Face ID been passed since the app was opened / last locked?
+let freshSignIn = false;   // just signed in with Apple/Google, so don't ask for Face ID too
+let ledgerLoaded = false;  // is the household's data already loaded in this session?
+
+function nativePlugin(name){
+  const C = window.Capacitor;
+  if(!C) return null;
+  if(C.Plugins && C.Plugins[name]) return C.Plugins[name];
+  try{ return C.registerPlugin ? C.registerPlugin(name) : null; }catch(e){ return null; }
+}
+function biometricPlugin(){ return isNativeApp() ? nativePlugin('NativeBiometric') : null; }
+function biometricEnabled(){
+  try{ return !!biometricPlugin() && localStorage.getItem(BIO_KEY) === '1'; }catch(e){ return false; }
+}
+function isLocked(){ return biometricEnabled() && !appUnlocked; }
+async function biometricInfo(){
+  const p = biometricPlugin();
+  if(!p) return { available:false };
+  try{
+    const r = await p.isAvailable({ useFallback:true });
+    return { available: !!r.isAvailable, type: r.biometryType };
+  }catch(e){ return { available:false }; }
+}
+function biometryLabel(type){
+  // Plugin's BiometryType: 1 Touch ID, 2 Face ID, 3 fingerprint, 7 device passcode
+  return type===2 ? 'Face ID' : type===1 ? 'Touch ID' : type===3 ? 'fingerprint' : type===7 ? 'your passcode' : 'Face ID';
+}
+async function verifyBiometric(reason){
+  const p = biometricPlugin();
+  if(!p) return { ok:false, cancelled:false };
+  try{
+    // useFallback: if Face ID fails, iOS offers the phone's passcode instead.
+    await p.verifyIdentity({ reason, title:'Money Manifest', useFallback:true });
+    return { ok:true };
+  }catch(e){
+    const code = String((e && (e.code ?? e.errorCode)) ?? '');
+    // 16 user cancel, 11 app cancel, 15 system cancel: just leave the lock screen up
+    return { ok:false, cancelled: ['11','15','16'].includes(code), code };
+  }
+}
+
+function renderLockScreen(message){
+  document.getElementById('appRoot').style.display = 'none';
+  document.getElementById('views').innerHTML = '';   // nothing left visible behind the lock
+  hideIdleWarning();
+  gate(`
+    <div class="mark">Money Manifest</div>
+    <div class="sub">Locked</div>
+    ${message ? `<div class="gate-error">${escapeHtml(message)}</div>` : ''}
+    <button class="oauth-btn apple" id="btnUnlock">Unlock</button>
+    <button class="oauth-btn" id="btnLockSignOut">Sign out instead</button>
+  `);
+  biometricInfo().then(info=>{ const b = document.getElementById('btnUnlock'); if(b) b.textContent = 'Unlock with ' + biometryLabel(info.type); });
+  document.getElementById('btnUnlock').addEventListener('click', ()=> attemptUnlock());
+  document.getElementById('btnLockSignOut').addEventListener('click', signOutEverywhere);
+}
+
+let unlockInProgress = false;
+async function attemptUnlock(){
+  if(unlockInProgress) return;
+  unlockInProgress = true;
+  const info = await biometricInfo();
+  if(!info.available){
+    // Face ID was turned off or removed on the phone since this was enabled.
+    unlockInProgress = false;
+    renderLockScreen('Face ID isn\'t available on this phone any more. Sign out and sign in again to continue.');
+    return;
+  }
+  const r = await verifyBiometric('Unlock Money Manifest');
+  unlockInProgress = false;
+  if(!r.ok){
+    renderLockScreen(r.cancelled ? '' : 'That didn\'t work. Try again, or sign out and sign in with Apple or Google.');
+    return;
+  }
+  appUnlocked = true;
+  markActive(true);
+  if(ledgerLoaded){
+    // Locked mid-session: the data is still loaded, so just show it again.
+    document.getElementById('gateRoot').innerHTML = '';
+    document.getElementById('appRoot').style.display = '';
+    render();
+  } else {
+    boot();
+  }
+}
+
+function lockApp(){
+  appUnlocked = false;
+  renderLockScreen('');
+  attemptUnlock();
+}
+
+// ============================ Auto sign-out after inactivity ============================
+// Per device (localStorage): each person chooses their own timeout, 5-60 minutes in
+// 5-minute steps, default 15. "Last active" is stored too, so closing the app and
+// reopening it hours later also signs you out, and phones (which pause timers in the
+// background) are checked the moment the app comes back to the foreground.
+const IDLE_KEY = 'mm-idle-minutes', ACTIVE_KEY = 'mm-last-active', SIGNOUT_REASON_KEY = 'mm-signout-reason';
+function idleMinutes(){
+  const v = parseInt(localStorage.getItem(IDLE_KEY), 10);
+  return (v >= 5 && v <= 60 && v % 5 === 0) ? v : 15;
+}
+function lastActive(){ return parseInt(localStorage.getItem(ACTIVE_KEY), 10) || 0; }
+function markActive(force){
+  const now = Date.now();
+  // Throttled: writing on every keystroke or scroll event isn't needed.
+  if(force || now - lastActive() > 10000){ try{ localStorage.setItem(ACTIVE_KEY, String(now)); }catch(e){} }
+  hideIdleWarning();
+}
+function idleExpired(){ const t = lastActive(); return t > 0 && (Date.now() - t) > idleMinutes()*60000; }
+
+let idleSigningOut = false;
+async function idleSignOut(){
+  if(idleSigningOut || !session) return;
+  // With Face ID unlock on, inactivity locks the app rather than signing out.
+  if(biometricEnabled()){ if(appUnlocked) lockApp(); return; }
+  idleSigningOut = true;
+  // Let an edit that's still saving finish first (up to ~3 seconds).
+  for(let i=0; i<30 && hasPendingLocalChanges(); i++) await new Promise(r=> setTimeout(r, 100));
+  const minutes = idleMinutes();
+  const provider = currentProvider();
+  try{ localStorage.removeItem(ACTIVE_KEY); }catch(e){}
+  if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  try{ await sb.auth.signOut(); }catch(e){}
+  // Saved only after sign-out has finished: signing out draws the login screen once,
+  // and that would otherwise use up this message just before the reload below.
+  try{ sessionStorage.setItem(SIGNOUT_REASON_KEY, `You were signed out after ${minutes} minutes of inactivity.`); }catch(e){}
+  rememberProviderForSignInScreen(provider);
+  // Reload so no budget data is left sitting in memory behind the sign-in screen.
+  window.location.reload();
+}
+
+function showIdleWarning(){
+  if(document.getElementById('idleWarning')) return;
+  const bar = document.createElement('div');
+  bar.id = 'idleWarning';
+  bar.className = 'idle-warning';
+  bar.innerHTML = biometricEnabled()
+    ? `<span>Money Manifest will lock in about a minute because of inactivity.</span><button class="btn small" id="idleStayBtn">Keep it open</button>`
+    : `<span>You'll be signed out in about a minute because of inactivity.</span><button class="btn small" id="idleStayBtn">Stay signed in</button>`;
+  document.body.appendChild(bar);
+  document.getElementById('idleStayBtn').addEventListener('click', ()=> markActive(true));
+}
+function hideIdleWarning(){ const w = document.getElementById('idleWarning'); if(w) w.remove(); }
+
+function checkIdle(){
+  if(!session || idleSigningOut || isLocked()) return;
+  if(idleExpired()){ idleSignOut(); return; }
+  const remaining = idleMinutes()*60000 - (Date.now() - lastActive());
+  if(lastActive() && remaining < 60000) showIdleWarning();
+}
+['pointerdown','keydown','wheel','touchstart'].forEach(ev=>
+  window.addEventListener(ev, ()=>{ if(session && !document.getElementById('idleWarning')) markActive(); }, { capture:true, passive:true }));
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible') checkIdle(); });
+setInterval(checkIdle, 15000);
+
+let bootedUserId = null;
+async function boot(){
+  bootedUserId = session && session.user ? session.user.id : null;
+  if(freshSignIn){ appUnlocked = true; freshSignIn = false; }
+  // Face ID on: ask for it before loading any data (opening the app, or a long absence).
+  if(isLocked()){ renderLockScreen(''); attemptUnlock(); return; }
+  // Reopened after being away longer than the timeout: sign out instead of loading data.
+  if(idleExpired()){ idleSignOut(); return; }
+  markActive(true);
+  renderLoading('Setting up your ledger…');
+  try{
+    if(!household) household = await findHousehold();
+    if(!household){ renderOnboarding(); return; }
+    const { migrated } = await loadLedgerFromServer();
+    subscribeRealtime();
+    if(migrated) saveState();
+    ledgerLoaded = true;
+    document.getElementById('gateRoot').innerHTML = '';
+    document.getElementById('appRoot').style.display = '';
+    const badge = document.getElementById('whoBadge');
+    if(badge) badge.textContent = session.user.email || '';
+    render();
+  }catch(err){
+    console.error(err);
+    bootedUserId = null; // let a later sign-in event retry the setup
+    renderLogin('Something went wrong loading your household: ' + err.message);
+  }
+}
+
+async function handleNativeAuthRedirect(){
+  // Only relevant inside the iOS app (Capacitor with the App plugin installed).
+  const AppPlugin = isNativeApp() ? nativePlugin('App') : null;
+  if(!AppPlugin) return;
+  AppPlugin.addListener('appUrlOpen', async ({ url })=>{
+    if(!url || !url.includes('auth-callback')) return;
+    const Browser = nativePlugin('Browser');
+    try{ if(Browser) await Browser.close(); }catch(e){ /* sheet may already be closed */ }
+    let params;
+    try{ params = new URL(url).searchParams; }catch(e){ console.error('Bad callback URL', url); return; }
+    if(params.get('error')){
+      renderLogin('Sign-in failed: ' + (params.get('error_description') || params.get('error')));
+      return;
+    }
+    const code = params.get('code');
+    if(!code){ renderLogin('Sign-in failed: no authorisation code was returned.'); return; }
+    // supabase-js v2 expects just the code here, not the full callback URL.
+    const { error } = await sb.auth.exchangeCodeForSession(code);
+    if(error){
+      console.error('OAuth code exchange failed', error);
+      renderLogin('Sign-in failed: ' + error.message);
+    }
+    // On success, onAuthStateChange fires SIGNED_IN and boot() takes over.
+  });
+}
+
+(async function init(){
+  if(!sb){ renderConfigMissing(); return; }
+
+  handleNativeAuthRedirect();
+
+  // onAuthStateChange fires once immediately with the current session (INITIAL_SESSION) —
+  // including one just detected from the URL after a sign-in redirect — and again on any
+  // future change. That's the single source of truth; a separate getSession() call used to
+  // run right after this and could resolve later with a stale/null result, undoing a
+  // correct boot() and bouncing back to the login screen even after a valid sign-in.
+  sb.auth.onAuthStateChange((event, sess)=>{
+    session = sess;
+    if(event === 'SIGNED_IN' || event === 'INITIAL_SESSION'){
+      if(!session){ renderLogin(); return; }
+      // Supabase re-announces SIGNED_IN whenever you come back to the tab or app (it
+      // re-checks the session). That's the same person, already loaded, so just keep
+      // the refreshed session. Only a different user needs the full setup.
+      if(bootedUserId === session.user.id) return;
+      boot();
+    } else if(event === 'SIGNED_OUT'){
+      // Signed out from any source, including Supabase ending an expired session by
+      // itself (no page reload). Forget everything tied to the previous user, so a
+      // different person signing in next doesn't inherit their household.
+      bootedUserId = null;
+      household = null;
+      ledgerLoaded = false;
+      appUnlocked = false;
+      if(realtimeChannel){ sb.removeChannel(realtimeChannel); realtimeChannel = null; }
+      renderLogin();
+    }
+    // TOKEN_REFRESHED etc.: the session object above is all that needs updating.
+  });
+})();
+
+})();
