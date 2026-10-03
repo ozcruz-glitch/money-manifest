@@ -42,6 +42,10 @@
 
   *{ box-sizing: border-box; }
   html,body{ height:100%; }
+  /* No double-tap zoom (easy to trigger by accident on buttons and number fields);
+     pinch zoom is controlled by the viewport tag set in the script below. Also stops iOS
+     enlarging text on its own when the phone is turned sideways. */
+  html{ touch-action:manipulation; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
   body{
     margin:0;
     background:var(--paper);
@@ -83,6 +87,10 @@
   .tab:hover{ background:rgba(239,237,227,0.06); color:#fff; }
   .tab.active{ background:var(--paper); color:var(--brand-dark); border-left:3px solid var(--cat-subscriptions); }
   .tab.active .num{ color:var(--cat-subscriptions); }
+  .rail-signout{ display:none; flex:none; align-items:center; justify-content:center; width:42px; height:42px;
+    background:none; border:1px solid rgba(239,237,227,0.25); border-radius:8px; color:#EFEDE3; cursor:pointer; }
+  .rail-signout:active{ background:rgba(239,237,227,0.12); }
+  .rail-brand{ cursor:pointer; }
   .rail-foot{ padding:14px 22px 0; border-top:1px solid rgba(239,237,227,0.14); }
   .rail-foot button{
     width:100%; background:none; border:1px solid rgba(239,237,227,0.3); color:#CFD8D1;
@@ -270,6 +278,35 @@
   table.exp.flat select.cat-select{ width:100%; border:1px solid transparent; background:transparent; padding:5px 6px; border-radius:3px; }
   table.exp.flat select.cat-select:hover{ border-color:var(--rule-strong); }
   @media (max-width: 880px){ .bva-summary{ grid-template-columns:1fr; } .bva-row{ grid-template-columns: 100px 1fr 70px 70px 50px 20px; font-size:12px; } }
+  @media (max-width: 560px){
+    .bva-row{ grid-template-columns: minmax(0,1fr) auto auto auto 22px; gap:4px 8px; }
+    .bva-row .cat-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .bva-row .bva-track{ grid-column: 1 / -1; grid-row: 2; }
+    .income-summary{ grid-template-columns: repeat(2, minmax(0,1fr)); gap:10px; }
+    .mini-card{ min-width:0; }
+    .mini-card .value{ font-size:18px; overflow-wrap:anywhere; }
+  }
+
+  /* ---------- Home ---------- */
+  .home-hello{ font-size:26px; margin-bottom:2px; }
+  .home-sub{ color:var(--ink-soft); font-size:13.5px; margin:0 0 18px; }
+  .home-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(230px,1fr)); gap:12px; margin-top:6px; }
+  .home-tile{ display:flex; flex-direction:column; align-items:flex-start; gap:6px; text-align:left; cursor:pointer;
+    background:var(--paper-raised); border:1px solid var(--rule); border-radius:10px; padding:16px; color:var(--ink);
+    font:inherit; transition:border-color .15s, transform .15s; min-width:0; }
+  .home-tile:hover, .home-tile:focus-visible{ border-color:var(--brand); outline:none; }
+  .home-tile:active{ transform:scale(0.98); }
+  .home-ico{ width:40px; height:40px; border-radius:10px; display:flex; align-items:center; justify-content:center;
+    background:var(--brand-tint); color:var(--brand-dark); margin-bottom:4px; }
+  .home-tile .t{ font-weight:700; font-size:15px; }
+  .home-tile .fig{ font-variant-numeric:tabular-nums; font-size:13.5px; font-weight:600; color:var(--brand-dark); overflow-wrap:anywhere; }
+  .home-tile .d{ font-size:12px; color:var(--ink-soft); line-height:1.4; }
+  @media (max-width: 560px){
+    .home-grid{ grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
+    .home-tile{ padding:13px; }
+    .home-tile .d{ display:none; }
+    .home-hello{ font-size:22px; }
+  }
 
   /* ---------- Scenarios ---------- */
   .scenario-tabs{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:22px; }
@@ -347,12 +384,14 @@
 
   @media (max-width: 880px){
     .app{ flex-direction:column; }
-    .rail{ width:100%; height:auto; position:relative; flex-direction:row; overflow-x:auto; padding:12px;
+    .rail{ width:100%; height:auto; position:relative; flex-direction:row; align-items:center; gap:6px; overflow:hidden; padding:12px;
       padding-top:calc(12px + env(safe-area-inset-top, 0px));
       padding-left:calc(12px + env(safe-area-inset-left, 0px)); padding-right:calc(12px + env(safe-area-inset-right, 0px)); }
     .main{ padding-bottom:env(safe-area-inset-bottom, 0px); }
     .rail-brand{ display:none; }
-    .rail-nav{ flex-direction:row; }
+    .rail-nav{ flex-direction:row; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+    .rail-nav::-webkit-scrollbar{ display:none; }
+    .rail-signout{ display:flex; }
     .tab{ border-left:none; border-bottom:3px solid transparent; white-space:nowrap; }
     .tab.active{ border-left:none; border-bottom:3px solid var(--cat-subscriptions); }
     .rail-foot{ display:none; }
@@ -486,16 +525,18 @@
       <div class="who-badge" id="whoBadge"></div>
     </div>
     <div class="rail-nav">
-      <button class="tab active" data-view="overview"><span class="num">01</span>Overview</button>
-      <button class="tab" data-view="expenses"><span class="num">02</span>Expenses</button>
-      <button class="tab" data-view="actual"><span class="num">03</span>Actual</button>
-      <button class="tab" data-view="income"><span class="num">04</span>Income</button>
-      <button class="tab" data-view="savings"><span class="num">05</span>Savings</button>
-      <button class="tab" data-view="forecast"><span class="num">06</span>Forecast</button>
-      <button class="tab" data-view="scenarios"><span class="num">07</span>Scenarios</button>
-      <button class="tab" data-view="flow"><span class="num">08</span>Flow</button>
-      <button class="tab" data-view="settings"><span class="num">09</span>Settings</button>
+      <button class="tab active" data-view="home"><span class="num">01</span>Home</button>
+      <button class="tab" data-view="overview"><span class="num">02</span>Overview</button>
+      <button class="tab" data-view="expenses"><span class="num">03</span>Expenses</button>
+      <button class="tab" data-view="actual"><span class="num">04</span>Actual</button>
+      <button class="tab" data-view="income"><span class="num">05</span>Income</button>
+      <button class="tab" data-view="savings"><span class="num">06</span>Savings</button>
+      <button class="tab" data-view="forecast"><span class="num">07</span>Forecast</button>
+      <button class="tab" data-view="scenarios"><span class="num">08</span>Scenarios</button>
+      <button class="tab" data-view="flow"><span class="num">09</span>Flow</button>
+      <button class="tab" data-view="settings"><span class="num">10</span>Settings</button>
     </div>
+    <button class="rail-signout" id="railSignOutBtn" title="Sign out" aria-label="Sign out"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
     <div class="rail-foot">
       <button id="signOutBtn">Sign out</button>
       <div class="save-note" id="saveNote">Synced</div>
@@ -528,6 +569,20 @@
 
 <script>
 (function(){
+
+// ---- Keep the page at exactly the screen's width on iPhone ----
+// iOS zooms in whenever a text box with text smaller than 16px is tapped, and doesn't
+// zoom back out, which leaves the page wider than the screen. maximum-scale=1 stops that.
+// In the iPhone app, zoom is switched off entirely (normal for an app). On the website in
+// iOS Safari, pinch-to-zoom still works, because Safari keeps it for accessibility.
+(function fitViewportToScreen(){
+  const native = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if(!native && !iOS) return;
+  const meta = document.querySelector('meta[name="viewport"]');
+  if(meta) meta.setAttribute('content',
+    'width=device-width, initial-scale=1, maximum-scale=1' + (native ? ', user-scalable=no' : '') + ', viewport-fit=cover');
+})();
 
 /* ============================= SUPABASE CONFIG =============================
    Fill these in after creating your Supabase project.
@@ -1074,7 +1129,7 @@ function allCategories(){
   return known;
 }
 
-let currentView = 'overview';
+let currentView = 'home';   // the Home screen opens first after signing in
 // IDs must be real UUIDs (the database columns require it), so there's no meaningful
 // prefix to apply here — this just wraps uuid() for a consistent call style everywhere.
 const newId = ()=> uuid();
@@ -1121,6 +1176,10 @@ function setView(v){
   currentView = v;
   document.querySelectorAll('.tab').forEach(t=> t.classList.toggle('active', t.dataset.view===v));
   render();
+  // Start each section at the top, and keep the chosen tab visible in the phone menu bar.
+  window.scrollTo(0, 0);
+  const active = document.querySelector(`.tab[data-view="${v}"]`);
+  if(active && active.scrollIntoView) active.scrollIntoView({ block:'nearest', inline:'nearest' });
 }
 
 // ---- Redraw scheduling ----
@@ -1193,7 +1252,8 @@ function doRender(){
   const view = document.createElement('div');
   view.className = 'view' + (currentView==='flow' ? ' view-wide' : '');
   root.appendChild(view);
-  if(currentView==='overview') renderOverview(view);
+  if(currentView==='home') renderHome(view);
+  else if(currentView==='overview') renderOverview(view);
   else if(currentView==='expenses') renderExpenses(view);
   else if(currentView==='actual') renderActual(view);
   else if(currentView==='income') renderIncome(view);
@@ -1202,6 +1262,61 @@ function doRender(){
   else if(currentView==='scenarios') renderScenarios(view);
   else if(currentView==='flow') renderFlow(view);
   else if(currentView==='settings') renderSettings(view);
+}
+
+/* ============================= HOME ============================= */
+
+const HOME_ICONS = {
+  overview:'<path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="12" y="8" width="3" height="10"/><rect x="17" y="5" width="3" height="13"/>',
+  expenses:'<path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/><line x1="9" y1="15" x2="13" y2="15"/>',
+  actual:'<polyline points="9 11 12 14 20 6"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/>',
+  income:'<rect x="2" y="6" width="20" height="13" rx="2"/><path d="M16 12.5h2"/><path d="M2 10h20"/>',
+  savings:'<path d="M19 9a7 7 0 1 0-13.4 2.8L4 16h3l1 3h3v-2h2v2h3l1-3a7 7 0 0 0 2-8z"/><circle cx="15" cy="9" r="1"/>',
+  forecast:'<polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/>',
+  scenarios:'<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/><path d="M8 6h3a4 4 0 0 1 4 4v0M8 18h3a4 4 0 0 0 4-4v0"/>',
+  flow:'<path d="M3 6c6 0 6 6 12 6h6"/><path d="M3 18c6 0 6-6 12-6"/><path d="M3 12h6"/>',
+  settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'
+};
+function homeIcon(key){
+  return `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${HOME_ICONS[key]||''}</svg>`;
+}
+
+function renderHome(root){
+  const h = new Date().getHours();
+  const hello = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  const left = leftover();
+  const plural = (n, one, many)=> `${n} ${n===1 ? one : (many || one+'s')}`;
+  const done = state.expenses.filter(e=> e.actioned).length;
+  const actualTotal = totalActual();
+  const tiles = [
+    { v:'overview',  t:'Overview',  fig:`${fmt(totalMonthlyExpenses())}/mo across ${plural(Object.keys(categoryTotals()).length,'category','categories')}`, d:'Where the month\'s money goes, by category.' },
+    { v:'expenses',  t:'Expenses',  fig:`${fmt(totalMonthlyExpenses())}/mo · ${plural(state.expenses.length,'bill')}` + (state.accounts.length && state.expenses.length ? ` · ${done} done` : ''), d:'Bills, accounts and transfers.' },
+    { v:'actual',    t:'Actual',    fig: state.actuals.length ? `${fmt(actualTotal)} recorded` : 'No spending entered yet', d:'Real spending against your budget.' },
+    { v:'income',    t:'Income',    fig:`${fmt(totalMonthlyIncome())}/mo`, d:'Everyone\'s pay and how often it arrives.' },
+    { v:'savings',   t:'Savings',   fig:`${fmt(totalMonthlySavings())}/mo · ${plural(state.savings.buckets.length,'goal')}`, d:'Goals, targets and who\'s contributing.' },
+    { v:'forecast',  t:'Forecast',  fig:`${(state.forecast && state.forecast.months) || 18}-month outlook`, d:'Project your balance forward.' },
+    { v:'scenarios', t:'Scenarios', fig: state.scenarios.length ? `${plural(state.scenarios.length,'scenario')} saved` : 'Test a what-if budget', d:'Try changes without touching the real budget.' },
+    { v:'flow',      t:'Flow',      fig:'Every dollar, start to finish', d:'Income flowing into bills and savings.' },
+    { v:'settings',  t:'Settings',  fig:`${state.users.length} ${state.users.length===1?'person':'people'} · ${plural(state.accounts.length,'account')}`, d:'People, categories, security and export.' }
+  ];
+  const status = left < -0.004
+    ? `<div class="flow-callout warn">⚠ Over budget by ${fmt(-left)}/mo. Expenses and savings add up to more than your income.</div>`
+    : left > 0.004
+      ? `<div class="flow-callout good">💰 ${fmt(left)}/mo left over after bills and savings.</div>`
+      : `<div class="flow-callout neutral">Every dollar of income is allocated.</div>`;
+  root.innerHTML = `
+    <h2 class="home-hello">${hello}</h2>
+    <p class="home-sub">${escapeHtml(state.budgetName || 'Your household budget')} · choose where to go</p>
+    ${state.income.earners.length || state.expenses.length ? status : ''}
+    <div class="home-grid">
+      ${tiles.map(x=> `<button class="home-tile" data-go="${x.v}" aria-label="${escapeHtml(x.t)}: ${escapeHtml(x.fig)}">
+        <span class="home-ico">${homeIcon(x.v)}</span>
+        <span class="t">${escapeHtml(x.t)}</span>
+        <span class="fig">${escapeHtml(x.fig)}</span>
+        <span class="d">${escapeHtml(x.d)}</span>
+      </button>`).join('')}
+    </div>`;
+  root.querySelectorAll('[data-go]').forEach(b=> b.addEventListener('click', ()=> setView(b.dataset.go)));
 }
 
 /* ============================= OVERVIEW ============================= */
@@ -3214,7 +3329,7 @@ function renderScenarioGroups(scenario){
         <span class="name">${escapeHtml(titleCase(cat))}</span>
         <span class="total">${fmt(totals[cat]||0)} / mo</span>
       </div>
-      <table class="exp">
+      <div class="exp-scroll"><table class="exp" style="min-width:600px;">
         <thead><tr>
           <th style="width:26%">Item</th>
           <th style="width:16%">Who</th>
@@ -3224,7 +3339,7 @@ function renderScenarioGroups(scenario){
           <th></th>
         </tr></thead>
         <tbody></tbody>
-      </table>
+      </table></div>
       <div class="add-row-bar"><button class="btn small ghost" data-scenaddto="${escapeHtml(cat)}">+ Add item to ${escapeHtml(titleCase(cat))}</button></div>
     `;
     const tbody = group.querySelector('tbody');
@@ -3594,11 +3709,15 @@ function drawFlowDiagram(tree){
   });
   const rootNode = tree.root;
   const rootTrueH = Math.max(rootNode.value*scale, 0.5); // proportional height before any header-space growth
-  rootNode.h = Math.max(rootTrueH, footprintOf(tree.col1));
+  // Income's own header sits level with the first column's header, so its bar only needs
+  // to span from that first bar down to the last one (the footprint minus one header).
+  rootNode.h = Math.max(rootTrueH, footprintOf(tree.col1) - headerBlockH);
 
   // ---- horizontal placement: each node gets its own run-length based on its value,
   // so bars in the same tier don't need to line up with each other ----
-  rootNode.x = leftPad; rootNode.y = topPad;
+  // Income gets a header block above its bar like every other node; without one its
+  // label position was undefined and the label was drawn off the top of the chart.
+  rootNode.x = leftPad; rootNode.headerY = topPad; rootNode.y = topPad + headerBlockH;
   const col1Vals = tree.col1.map(n=>n.value);
   tree.col1.forEach(n=>{ n.x = rootNode.x + barW + runLength(n.value, Math.min(...col1Vals), Math.max(...col1Vals)); });
   const col2Vals = tree.col2.map(n=>n.value);
@@ -3646,7 +3765,7 @@ function drawFlowDiagram(tree){
     maxRight = Math.max(maxRight, n.x + Math.max(barW, w) + 4);
   });
 
-  const H = topPad + Math.max(rootNode.h, col1Bottom-topPad, col2Bottom-topPad, col3Bottom-topPad) + bottomPad;
+  const H = Math.max(rootNode.y + rootNode.h, col1Bottom, col2Bottom, col3Bottom) + bottomPad;
   const W = maxRight + rightPad;
 
   const svg = document.createElementNS(ns,'svg');
@@ -3677,6 +3796,7 @@ function drawFlowDiagram(tree){
   const ribbonLayer = document.createElementNS(ns,'g');
   const nodeLayer = document.createElementNS(ns,'g');
   const overlayLayer = document.createElementNS(ns,'g');
+  const warnLayer = document.createElementNS(ns,'g');   // over-budget label, drawn on top
 
   tree.col1.forEach(n=> ribbonLayer.appendChild(ribbon(rootNode.x+barW, n._srcY0, n._srcY1, n.x, n.y, n.y+n.h, n.color)));
   tree.col2.forEach(n=>{
@@ -3819,25 +3939,27 @@ function drawFlowDiagram(tree){
     // with a solid backing behind it so it stays legible regardless of what's beneath.
     const warnText = '⚠ ' + fmt(-tree.leftover) + ' over budget';
     const warnW = measureTextWidth(warnText, 11.5, 700);
-    const warnX = leftPad, warnY = boundaryY - 8;
+    // Just right of the Income bar (not on top of it), and drawn above everything else.
+    const warnX = rootNode.x + barW + 8, warnY = boundaryY - 8;
     const halo = document.createElementNS(ns,'rect');
     halo.setAttribute('x', warnX - 5); halo.setAttribute('y', warnY - 13);
     halo.setAttribute('width', warnW + 10); halo.setAttribute('height', 18);
     halo.setAttribute('rx', 3); halo.setAttribute('fill', resolveVar('var(--paper-raised)'));
     halo.setAttribute('fill-opacity', '0.92');
-    overlayLayer.appendChild(halo);
+    warnLayer.appendChild(halo);
 
     const warnLabel = document.createElementNS(ns,'text');
     warnLabel.setAttribute('x', warnX); warnLabel.setAttribute('y', warnY);
     warnLabel.setAttribute('font-size','11.5'); warnLabel.setAttribute('font-weight','700');
     warnLabel.setAttribute('fill', resolveVar('var(--warn)'));
     warnLabel.textContent = warnText;
-    overlayLayer.appendChild(warnLabel);
+    warnLayer.appendChild(warnLabel);
   }
 
   svg.appendChild(overlayLayer);
   svg.appendChild(ribbonLayer);
   svg.appendChild(nodeLayer);
+  svg.appendChild(warnLayer);
   return svg;
 }
 
@@ -4126,6 +4248,11 @@ document.querySelectorAll('.tab').forEach(tab=>{
 });
 
 document.getElementById('signOutBtn').addEventListener('click', signOutEverywhere);
+// The phone menu-bar icon sits right next to the tabs, so confirm before signing out.
+document.getElementById('railSignOutBtn').addEventListener('click', ()=>{
+  if(confirm('Sign out of Money Manifest?')) signOutEverywhere();
+});
+document.querySelector('.rail-brand').addEventListener('click', ()=> setView('home'));
 
 function loadSampleData(){
   if(!confirm('Load the sample household into your ledger? This adds demo expenses, income and savings goals.')) return;
