@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Money Manifest</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -172,7 +172,12 @@
   .new-cat-input{ font-size:12px; padding:6px 8px; border:1px solid var(--rule-strong); border-radius:3px; width:150px; }
 
   /* ---------- Income ---------- */
-  .earner-row{ display:grid; grid-template-columns: 1fr 160px 34px; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--rule); }
+  .earner-row{ display:grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr) minmax(0,1fr) minmax(70px,auto) 34px; gap:10px; align-items:center; padding:8px 0; border-bottom:1px solid var(--rule); }
+  .earner-row select{ padding:8px 6px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; min-width:0; width:100%; }
+  .earner-row input{ min-width:0; width:100%; }
+  .earner-row .num{ text-align:right; font-variant-numeric:tabular-nums; }
+  .earner-row.head{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); font-weight:600; padding-bottom:4px; }
+  @media (max-width: 560px){ .earner-row{ grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 34px; } .earner-row > .pm{ display:none; } }
   .earner-row input{ padding:8px 10px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; }
   .freq-toggle{ display:inline-flex; border:1px solid var(--brand); border-radius:3px; overflow:hidden; }
   .freq-toggle button{ background:#fff; border:none; padding:7px 14px; font-size:12.5px; font-weight:600; color:var(--brand); }
@@ -197,7 +202,7 @@
   .fc-field{ display:flex; flex-direction:column; gap:5px; min-width:150px; }
   .fc-field label{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); }
   .fc-field input[type=range]{ width:100%; }
-  .fc-field input[type=number]{ width:90px; padding:6px 8px; border:1px solid var(--rule-strong); border-radius:3px; }
+  .fc-field input[inputmode=decimal]{ width:90px; padding:6px 8px; border:1px solid var(--rule-strong); border-radius:3px; }
   .fc-field .fc-val{ font-variant-numeric: tabular-nums; font-weight:600; font-size:13px; }
 
   svg text{ font-family:'Inter', sans-serif; }
@@ -210,10 +215,10 @@
     display:grid; grid-template-columns: 28px 1fr 90px 34px; gap:10px; align-items:center;
     padding:8px 0; border-bottom:1px solid var(--rule);
   }
-  .settings-row input[type=text]{ padding:8px 10px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; }
+  .settings-row input[type=text]{ min-width:0; width:100%; padding:8px 10px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; }
   .settings-row .count{ font-size:11.5px; color:var(--ink-soft); text-align:right; }
   .settings-row .dot{ width:12px; height:12px; border-radius:50%; }
-  .settings-row.cat-row{ grid-template-columns: 24px 1fr 90px 20px 34px; }
+  .settings-row.cat-row{ grid-template-columns: 24px minmax(0,1fr) auto auto 34px; }
   .settings-row.cat-row input[type=color]{ width:22px; height:22px; padding:0; border:none; border-radius:4px; cursor:pointer; background:none; }
   .settings-row .reset-color{ font-size:10px; color:var(--ink-soft); background:none; border:none; cursor:pointer; text-decoration:underline; padding:0; white-space:nowrap; }
   .add-inline{ display:flex; gap:8px; margin-top:12px; }
@@ -342,7 +347,10 @@
 
   @media (max-width: 880px){
     .app{ flex-direction:column; }
-    .rail{ width:100%; height:auto; position:relative; flex-direction:row; overflow-x:auto; padding:12px; }
+    .rail{ width:100%; height:auto; position:relative; flex-direction:row; overflow-x:auto; padding:12px;
+      padding-top:calc(12px + env(safe-area-inset-top, 0px));
+      padding-left:calc(12px + env(safe-area-inset-left, 0px)); padding-right:calc(12px + env(safe-area-inset-right, 0px)); }
+    .main{ padding-bottom:env(safe-area-inset-bottom, 0px); }
     .rail-brand{ display:none; }
     .rail-nav{ flex-direction:row; }
     .tab{ border-left:none; border-bottom:3px solid transparent; white-space:nowrap; }
@@ -356,10 +364,59 @@
 
   @media (prefers-reduced-motion: reduce){ *{ transition:none !important; animation:none !important; } }
 
+  .danger-zone{ border:1px solid var(--warn); border-radius:4px; padding:16px; background:var(--warn-tint); }
+  .danger-zone h4{ margin:0 0 6px; color:var(--warn); font-size:14px; }
+  .danger-zone p{ font-size:12.5px; color:var(--ink); margin:0 0 12px; }
+  .btn.danger{ background:var(--warn); }
+  .btn.danger:hover{ filter:brightness(0.9); }
+
+  /* ---------- Scenario comparison ---------- */
+  .scen-compare-wrap{ overflow-x:auto; margin-bottom:26px; }
+  table.scen-compare{ width:100%; border-collapse:collapse; background:var(--paper-raised); border:1px solid var(--rule); border-radius:4px; font-size:14px; }
+  table.scen-compare th{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); font-weight:600; padding:10px 14px; text-align:left; border-bottom:1px solid var(--rule); }
+  table.scen-compare td{ padding:10px 14px; border-bottom:1px solid var(--rule); }
+  table.scen-compare .num{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  table.scen-compare tr.total td{ font-weight:700; border-bottom:none; background:var(--paper); }
+
+  /* ---------- Savings split ---------- */
+  .split-row{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; margin-top:12px; padding-top:10px; border-top:1px dashed var(--rule); font-size:12.5px; }
+  .split-row .split-label{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); font-weight:600; }
+  .split-person{ display:flex; align-items:center; gap:6px; }
+  .split-person .dot{ width:9px; height:9px; border-radius:50%; flex:none; }
+  .split-person input{ width:56px; padding:5px 6px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; text-align:right; font-size:12.5px; }
+  .split-person .amt{ color:var(--ink-soft); font-variant-numeric:tabular-nums; }
+  .split-warn{ color:var(--warn); font-weight:600; }
+  .split-even{ background:none; border:none; padding:0; color:var(--brand-dark); text-decoration:underline; cursor:pointer; font-size:12px; }
+
+  /* ---------- Bank accounts / transfers ---------- */
+  .acct-panel{ background:var(--paper-raised); border:1px solid var(--rule); border-radius:4px; padding:14px 16px; margin-bottom:24px; }
+  .acct-row{ display:grid; grid-template-columns: minmax(0,1.3fr) minmax(0,1.3fr) auto auto auto 34px; gap:10px; align-items:center; padding:7px 0; border-bottom:1px solid var(--rule); font-size:13px; }
+  .acct-row:last-of-type{ border-bottom:none; }
+  .acct-row.head{ font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; color:var(--ink-soft); font-weight:600; padding-top:0; }
+  .acct-row input{ min-width:0; width:100%; padding:6px 8px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; font-size:13px; }
+  .acct-row .num{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .acct-row .prog{ font-size:12px; color:var(--ink-soft); white-space:nowrap; text-align:right; }
+  .acct-row .prog.complete{ color:var(--good); font-weight:600; }
+  .acct-row.head .prog{ font-size:inherit; color:inherit; }
+  .acct-actions{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+  .acct-actions input{ padding:7px 9px; border:1px solid var(--rule-strong); border-radius:3px; background:#fff; min-width:0; }
+  .exp-scroll{ overflow-x:auto; }
+  .exp-scroll table.exp{ min-width:760px; }
+  table.exp tr.done td:not(.done-cell){ opacity:0.5; }
+  table.exp td.done-cell{ text-align:center; }
+  table.exp td.done-cell input{ width:18px; height:18px; cursor:pointer; accent-color:var(--brand); }
+  @media (max-width: 880px){
+    .acct-row{ grid-template-columns: minmax(0,1fr) auto auto 34px; }
+    .acct-row .details-col, .acct-row.head .details-col{ display:none; }
+    .acct-row .perpay-col{ display:none; }
+  }
+
   /* ---------- Auth / onboarding ---------- */
   .gate{
     min-height:100vh; display:flex; align-items:center; justify-content:center;
     background:var(--brand-dark); padding:24px;
+    padding-top:calc(24px + env(safe-area-inset-top, 0px));
+    padding-bottom:calc(24px + env(safe-area-inset-bottom, 0px));
   }
   .gate-card{
     background:var(--paper); border-radius:8px; padding:36px 34px; width:100%; max-width:380px;
@@ -463,7 +520,12 @@ const SUPABASE_URL = 'https://hqotplhflmzsctdxcosl.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qj4p5QN5iNnvLKH-VvmKKg_wdOf7jvI';
 
 const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
-
+  // PKCE flow — required for the native iOS build's deep-link handler below
+  // (exchangeCodeForSession only works with PKCE's code-based handoff; using implicit
+  // flow here while that handler expects PKCE was an inconsistency in its own right).
+  // The earlier "OAuth state parameter missing" failures turned out to be caused by
+  // SUPABASE_URL being set to the auth callback URL instead of the bare project URL —
+  // unrelated to PKCE vs implicit — so PKCE is safe to use now that that's fixed.
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'pkce' } })
   : null;
 
@@ -506,7 +568,34 @@ function renderLogin(errorMsg){
   document.getElementById('btnGoogle').addEventListener('click', ()=> signIn('google'));
 }
 
+function isNativeApp(){
+  return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+}
+
 async function signIn(provider){
+  if(isNativeApp()){
+    // Inside the iOS app: Google refuses OAuth inside an embedded web view
+    // (error "disallowed_useragent"), so don't let Supabase navigate the app's own
+    // web view. Ask for the URL instead and open it in the system browser sheet
+    // (SFSafariViewController) via the Capacitor Browser plugin. The sign-in then
+    // returns through the app.moneymanifest:// deep link handled below.
+    const { data, error } = await sb.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: getRedirectUrl(), skipBrowserRedirect: true }
+    });
+    if(error || !data || !data.url){
+      console.error('signInWithOAuth failed', error);
+      renderLogin('Could not start sign-in: ' + (error ? error.message : 'no sign-in URL returned'));
+      return;
+    }
+    const Browser = window.Capacitor.Plugins.Browser;
+    if(!Browser){
+      renderLogin('Sign-in needs the Capacitor Browser plugin — see the setup guide.');
+      return;
+    }
+    await Browser.open({ url: data.url, presentationStyle: 'popover' });
+    return;
+  }
   const { error } = await sb.auth.signInWithOAuth({
     provider,
     options: { redirectTo: getRedirectUrl() }
@@ -520,7 +609,7 @@ async function signIn(provider){
 function getRedirectUrl(){
   // Inside the native app this becomes a custom scheme registered in Xcode + Supabase's
   // Auth → URL Configuration → Redirect URLs. In a plain browser it's just this page.
-  if(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()){
+  if(isNativeApp()){
     return 'app.moneymanifest://auth-callback';
   }
   return window.location.origin + window.location.pathname;
@@ -654,14 +743,37 @@ async function loadLedgerFromServer(){
   state.categoryColors = (settingsRow && settingsRow.category_colors) || {};
   state.personColors = (settingsRow && settingsRow.person_colors) || {};
   state.scenarios = (settingsRow && settingsRow.scenarios) || [];
+  state.accounts = (settingsRow && settingsRow.accounts) || [];
   state.budgetName = household.name || '';
   state.income.frequency = (settingsRow && settingsRow.income_frequency) || 'FORTNIGHTLY';
   state.forecast = (settingsRow && settingsRow.forecast) || { months: 18, incomeGrowth: 0, expenseInflation: 2 };
 
-  state.expenses = (exp||[]).map(r=> ({ id:r.id, category:r.category, item:r.item, person:r.person, frequency:r.frequency, amount:Number(r.amount) }));
-  state.income.earners = (earn||[]).map(r=> ({ id:r.id, name:r.name, monthly:Number(r.monthly) }));
-  state.savings.buckets = (buckets||[]).map(r=> ({ id:r.id, name:r.name, target:Number(r.target), start:Number(r.start_balance), monthly:Number(r.monthly) }));
+  state.expenses = (exp||[]).map(r=> ({ id:r.id, category:r.category, item:r.item, person:r.person, frequency:r.frequency, amount:Number(r.amount), account:r.account_id||'', actioned:!!r.actioned }));
+  state.income.earners = (earn||[]).map(r=> ({ id:r.id, name:r.name, monthly:Number(r.monthly), frequency:r.pay_frequency||null }));
+  state.savings.buckets = (buckets||[]).map(r=> ({ id:r.id, name:r.name, target:Number(r.target), start:Number(r.start_balance), monthly:Number(r.monthly), split:r.split||{} }));
   state.actuals = (actualRows||[]).map(r=> ({ id:r.id, category:r.category, item:r.item, amount:Number(r.amount) }));
+
+  // Data saved before the pay-method setting existed (or by an older copy of the app
+  // still open on another device) was converted with x26/12. Mark it as such, then
+  // convert to the default x2 so each person's fortnightly amount is unchanged.
+  // Earlier versions had one pay frequency for the whole household, and some of them
+  // converted fortnightly pay to monthly as x26/12 rather than x2. Any earner without
+  // their own frequency is from that era: give them the old household frequency and,
+  // where needed, re-convert so their amount per pay is unchanged. Earners that already
+  // have a frequency were saved by this version and are left alone.
+  const legacyFactor = (state.forecast.payMethod === 'TWO_PAYS') ? 2 : 26/12;
+  let migrated = false;
+  state.income.earners.forEach(p=>{
+    if(PAYS_PER_MONTH[p.frequency]) return;
+    p.frequency = state.income.frequency === 'MONTHLY' ? 'MONTHLY' : 'FORTNIGHTLY';
+    if(p.frequency === 'FORTNIGHTLY') p.monthly = (Number(p.monthly)||0) / legacyFactor * 2;
+    migrated = true;
+  });
+  if(state.forecast.payMethod !== 'TWO_PAYS'){
+    state.forecast = Object.assign({}, state.forecast, { payMethod:'TWO_PAYS' });
+    migrated = true;
+  }
+  return { migrated };
 }
 
 let realtimeChannel = null;
@@ -678,8 +790,18 @@ function subscribeRealtime(){
         onChange();
         return;
       }
-      await loadLedgerFromServer();
-      render();
+      if(isEditingField()){
+        // You're typing in a field: a redraw now would kick you out of it and could
+        // replace what you've typed. Check again shortly.
+        onChange();
+        return;
+      }
+      const before = ledgerSnapshot();
+      const { migrated } = await loadLedgerFromServer();
+      if(migrated) saveState();
+      // Supabase sends every save back to all devices, including the one that made it.
+      // When nothing actually changed, skip the redraw entirely.
+      if(ledgerSnapshot() !== before) render();
     }, 500);
   };
   realtimeChannel = sb.channel('household-'+household.id)
@@ -719,6 +841,14 @@ async function syncDeleteRow(table, id){
 
 let saveTimer = null;
 let syncInFlight = false;
+function isEditingField(){
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest('#appRoot') && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName));
+}
+function ledgerSnapshot(){
+  return JSON.stringify([state.expenses, state.income, state.savings, state.users, state.categories,
+    state.categoryColors, state.personColors, state.actuals, state.scenarios, state.forecast, state.accounts]);
+}
 function hasPendingLocalChanges(){ return saveTimer !== null || syncInFlight; }
 
 function saveState(){
@@ -729,9 +859,9 @@ function saveState(){
     saveTimer = null;
     syncInFlight = true;
     try{
-      const expRows = state.expenses.map(e=> ({ id:e.id, household_id:household.id, category:e.category, item:e.item, person:e.person, frequency:e.frequency, amount:e.amount }));
-      const earnRows = state.income.earners.map(p=> ({ id:p.id, household_id:household.id, name:p.name, monthly:p.monthly }));
-      const bucketRows = state.savings.buckets.map(b=> ({ id:b.id, household_id:household.id, name:b.name, target:b.target, start_balance:b.start||0, monthly:b.monthly }));
+      const expRows = state.expenses.map(e=> ({ id:e.id, household_id:household.id, category:e.category, item:e.item, person:e.person, frequency:e.frequency, amount:e.amount, account_id:e.account||null, actioned:!!e.actioned }));
+      const earnRows = state.income.earners.map(p=> ({ id:p.id, household_id:household.id, name:p.name, monthly:p.monthly, pay_frequency:earnerFreq(p) }));
+      const bucketRows = state.savings.buckets.map(b=> ({ id:b.id, household_id:household.id, name:b.name, target:b.target, start_balance:b.start||0, monthly:b.monthly, split:b.split||{} }));
       const actualRows = state.actuals.map(a=> ({ id:a.id, household_id:household.id, category:a.category, item:a.item, amount:a.amount }));
 
       const calls = [
@@ -742,6 +872,7 @@ function saveState(){
           category_colors: state.categoryColors,
           person_colors: state.personColors,
           scenarios: state.scenarios,
+          accounts: state.accounts,
           income_frequency: state.income.frequency,
           forecast: state.forecast
         })
@@ -755,7 +886,12 @@ function saveState(){
       const failed = results.find(r=> r && r.error);
       if(failed){
         console.error('sync failed', failed.error);
-        if(note) note.textContent = 'Sync failed — check connection';
+        // A missing column means the app was updated before the database was. Say so
+        // plainly — otherwise it looks like a connection problem and nothing saves.
+        const msg = (failed.error && failed.error.message) || '';
+        if(note) note.textContent = /column|schema cache/i.test(msg)
+          ? 'Database needs updating — run the latest schema.sql block'
+          : 'Sync failed — check connection';
       } else if(note){
         note.textContent = 'Synced';
       }
@@ -878,6 +1014,7 @@ let state = {
   actuals: [],
   scenarios: [],
   budgetName: '',
+  accounts: [],   // bank accounts expenses can be nominated to: [{ id, name, details }]
   forecast: { months: 18, incomeGrowth: 0, expenseInflation: 2 }
 };
 
@@ -936,7 +1073,69 @@ function setView(v){
   render();
 }
 
+// ---- Redraw scheduling ----
+// Every edit redraws the screen, which replaces every input with a fresh copy. Done
+// naively, that throws away whichever field you're in: a field's "change" fires as you
+// leave it, so the redraw used to land mid-click or mid-Tab and destroy the field you
+// were moving into (and could swallow a button click). So: wait until a pointer press
+// has finished, run change-triggered redraws after focus has moved, and put the
+// cursor back where it was afterwards.
+let pointerIsDown = false, renderPending = false, renderQueued = false;
+window.addEventListener('pointerdown', ()=>{ pointerIsDown = true; }, true);
+function releasePointer(){
+  if(!pointerIsDown) return;
+  pointerIsDown = false;
+  // Let the click (fired after pointerup) run first, then redraw if still needed.
+  setTimeout(()=>{ if(renderPending) render(); }, 0);
+}
+window.addEventListener('pointerup', releasePointer, true);
+window.addEventListener('pointercancel', releasePointer, true);
+
 function render(){
+  if(pointerIsDown){
+    renderPending = true;
+    // Safety net in case a pointerup never arrives (e.g. released outside the window).
+    setTimeout(()=>{ if(renderPending){ pointerIsDown = false; render(); } }, 800);
+    return;
+  }
+  if(window.event && window.event.type === 'change'){
+    if(!renderQueued){
+      renderQueued = true;
+      setTimeout(()=>{ renderQueued = false; render(); }, 0);
+    }
+    return;
+  }
+  renderPending = false;
+  const focus = captureFocus();
+  doRender();
+  restoreFocus(focus);
+}
+
+function focusKey(el){
+  if(!el || el===document.body || !el.closest || !el.closest('#appRoot')) return null;
+  if(!/^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(el.tagName)) return null;
+  if(el.id) return '#' + CSS.escape(el.id);
+  const attrs = [...el.attributes].filter(a=> a.name.startsWith('data-'));
+  if(!attrs.length) return null;
+  return el.tagName.toLowerCase() + attrs.map(a=> `[${a.name}="${CSS.escape(a.value)}"]`).join('');
+}
+function captureFocus(){
+  const el = document.activeElement, key = focusKey(el);
+  if(!key) return null;
+  let start = null, end = null;
+  try{ start = el.selectionStart; end = el.selectionEnd; }catch(e){ /* number inputs have no selection API */ }
+  return { key, start, end };
+}
+function restoreFocus(f){
+  if(!f) return;
+  let el = null;
+  try{ el = document.querySelector(f.key); }catch(e){ return; }
+  if(!el) return;
+  el.focus({ preventScroll:true });
+  try{ if(f.start!=null) el.setSelectionRange(f.start, f.end); }catch(e){ /* not supported for this input type */ }
+}
+
+function doRender(){
   renderStrip();
   const root = document.getElementById('views');
   root.innerHTML = '';
@@ -1118,16 +1317,106 @@ function whoOptions(selected){
   return opts.map(u=> `<option value="${escapeHtml(u)}" ${u===selected?'selected':''}>${escapeHtml(u)}</option>`).join('');
 }
 
+function accountOptions(selected){
+  const opts = [`<option value="" ${!selected?'selected':''}>—</option>`]
+    .concat(state.accounts.map(a=> `<option value="${escapeHtml(a.id)}" ${a.id===selected?'selected':''}>${escapeHtml(a.name)}</option>`));
+  return opts.join('');
+}
+
+function accountSummary(accountId){
+  const items = state.expenses.filter(e=> (e.account||'') === accountId);
+  return {
+    monthly: items.reduce((s,e)=> s + monthlyOf(e), 0),
+    count: items.length,
+    done: items.filter(e=> e.actioned).length
+  };
+}
+
+function renderAccountsPanel(){
+  const wrap = document.getElementById('accountsPanel');
+  const fortnightly = anyFortnightlyEarner();
+  const row = (a, s, isUnassigned)=>{
+    const prog = s.count ? `${s.done} of ${s.count} done` : 'No bills';
+    return `<div class="acct-row">
+      ${isUnassigned
+        ? `<span style="font-weight:600; color:var(--ink-soft);">Not assigned</span><span class="details-col"></span>`
+        : `<input type="text" value="${escapeHtml(a.name)}" data-acc-id="${escapeHtml(a.id)}" data-acc-field="name" aria-label="Account name">
+           <input class="details-col" type="text" value="${escapeHtml(a.details||'')}" data-acc-id="${escapeHtml(a.id)}" data-acc-field="details" placeholder="Details (optional)" aria-label="Account details">`}
+      <span class="num">${fmt(s.monthly, 2)}<span style="color:var(--ink-soft); font-size:11px;"> /mo</span></span>
+      <span class="num perpay-col">${fortnightly ? fmt(s.monthly / 2, 2) + '<span style="color:var(--ink-soft); font-size:11px;"> /fortnight</span>' : ''}</span>
+      <span class="prog ${s.count && s.done===s.count ? 'complete' : ''}">${prog}</span>
+      ${isUnassigned ? '<span></span>' : `<button class="icon-btn" data-del-acc="${escapeHtml(a.id)}" title="Remove account">✕</button>`}
+    </div>`;
+  };
+  const unassigned = accountSummary('');
+  const anyDone = state.expenses.some(e=> e.actioned);
+  wrap.innerHTML = `
+    <div class="acct-panel">
+      <div class="block-head" style="margin-bottom:8px;"><h3>Bank accounts &amp; transfers</h3>
+        <span class="hint">Nominate an account for each bill, then tick bills off as they're paid or transferred</span></div>
+      ${state.accounts.length ? `
+        <div class="acct-row head"><span>Account</span><span class="details-col">Details</span><span class="num">Monthly</span><span class="num perpay-col">${fortnightly?'Per fortnight':''}</span><span class="prog">Actioned</span><span></span></div>
+        ${state.accounts.map(a=> row(a, accountSummary(a.id), false)).join('')}
+        ${unassigned.count ? row(null, unassigned, true) : ''}`
+      : `<div class="empty" style="padding:6px 0 0;">No accounts yet. Add one below, e.g. "Bills account" or "Mortgage offset".</div>`}
+      <div class="acct-actions">
+        <input type="text" id="newAccountInput" placeholder="New account name">
+        <button class="btn small ghost" id="addAccountBtn">+ Add account</button>
+        ${anyDone ? `<button class="btn small ghost" id="untickAllBtn" style="margin-left:auto;" title="Clear every Done tick, e.g. at the start of a new pay cycle">Untick all</button>` : ''}
+      </div>
+    </div>`;
+
+  wrap.querySelectorAll('input[data-acc-id]').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      const acc = state.accounts.find(a=> a.id===inp.dataset.accId);
+      if(!acc) return;
+      const v = inp.value.trim();
+      if(inp.dataset.accField==='name'){ if(v) acc.name = v; }
+      else acc.details = v;
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-del-acc]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.dataset.delAcc;
+      const acc = state.accounts.find(a=> a.id===id);
+      const n = state.expenses.filter(e=> e.account===id).length;
+      if(n && !confirm(`Remove "${acc ? acc.name : 'this account'}"? ${n} bill${n===1?'':'s'} nominated to it will become "not assigned".`)) return;
+      state.accounts = state.accounts.filter(a=> a.id!==id);
+      state.expenses.forEach(e=>{ if(e.account===id) e.account=''; });
+      saveState(); render();
+    });
+  });
+  const addAcc = ()=>{
+    const input = document.getElementById('newAccountInput');
+    const name = input.value.trim();
+    if(!name) return;
+    state.accounts.push({ id:newId(), name, details:'' });
+    saveState(); render();
+  };
+  document.getElementById('addAccountBtn').addEventListener('click', addAcc);
+  document.getElementById('newAccountInput').addEventListener('keydown', e=>{ if(e.key==='Enter') addAcc(); });
+  const untick = document.getElementById('untickAllBtn');
+  if(untick) untick.addEventListener('click', ()=>{
+    if(!confirm('Clear every Done tick? Use this at the start of a new month or pay cycle.')) return;
+    state.expenses.forEach(e=>{ e.actioned = false; });
+    saveState(); render();
+  });
+}
+
 function renderExpenses(root){
   root.innerHTML = `
     <h2>Expenses</h2>
     <p class="lede">Every bill and outgoing, grouped by category. Enter the amount at whatever frequency the bill actually arrives — the ledger converts it to a monthly figure automatically. Rename a category by editing its name; manage people and categories in Settings.</p>
+    <div id="accountsPanel"></div>
     <div id="groups"></div>
     <div class="add-inline" style="max-width:320px;">
       <input type="text" id="newCatInput" placeholder="New category name">
       <button class="btn small ghost" id="addCatBtn">+ Add category</button>
     </div>
   `;
+
+  renderAccountsPanel();
 
   const totals = categoryTotals();
   const cats = allCategories();
@@ -1150,17 +1439,19 @@ function renderExpenses(root){
         <span class="total">${fmt(totals[cat]||0)} / mo</span>
         <button class="icon-btn" data-delcat="${escapeHtml(cat)}" title="Remove category">✕</button>
       </div>
-      <table class="exp">
+      <div class="exp-scroll"><table class="exp">
         <thead><tr>
-          <th style="width:26%">Item</th>
-          <th style="width:16%">Who</th>
-          <th style="width:16%">Frequency</th>
-          <th style="width:16%">Amount</th>
-          <th style="width:16%">Monthly</th>
+          <th style="width:21%">Item</th>
+          <th style="width:11%">Who</th>
+          <th style="width:11%">Frequency</th>
+          <th style="width:12%">Amount</th>
+          <th style="width:11%">Monthly</th>
+          <th style="width:20%">Account</th>
+          <th style="width:7%; text-align:center;" title="Tick once this has been paid or transferred">Done</th>
           <th></th>
         </tr></thead>
         <tbody></tbody>
-      </table>
+      </table></div>
       <div class="add-row-bar">
         <button class="btn small ghost" data-addto="${escapeHtml(cat)}">+ Add item to ${escapeHtml(titleCase(cat))}</button>
       </div>
@@ -1177,15 +1468,18 @@ function renderExpenses(root){
             <option value="YEARLY" ${e.frequency==='YEARLY'?'selected':''}>Yearly</option>
           </select>
         </td>
-        <td><input class="amt" type="number" step="0.01" value="${e.amount}" data-id="${e.id}" data-field="amount"></td>
+        <td><input class="amt" type="text" inputmode="decimal" step="0.01" value="${e.amount}" data-id="${e.id}" data-field="amount"></td>
         <td class="amt">${fmt(monthlyOf(e), 2)}</td>
+        <td><select data-id="${e.id}" data-field="account">${accountOptions(e.account)}</select></td>
+        <td class="done-cell"><input type="checkbox" data-id="${e.id}" data-field="actioned" ${e.actioned?'checked':''} aria-label="Actioned"></td>
         <td class="actions"><button class="icon-btn" data-del="${e.id}" title="Remove">✕</button></td>
       `;
+      if(e.actioned) tr.classList.add('done');
       tbody.appendChild(tr);
     });
     if(items.length===0){
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td colspan="6" class="empty" style="padding:10px;">No items in this category yet.</td>`;
+      tr.innerHTML = `<td colspan="8" class="empty" style="padding:10px;">No items in this category yet.</td>`;
       tbody.appendChild(tr);
     }
     groupsEl.appendChild(group);
@@ -1196,7 +1490,8 @@ function renderExpenses(root){
       const id = ev.target.dataset.id, field = ev.target.dataset.field;
       const exp = state.expenses.find(x=>x.id===id);
       if(!exp) return;
-      exp[field] = field==='amount' ? parseFloat(ev.target.value)||0 : ev.target.value;
+      if(field==='actioned') exp.actioned = ev.target.checked;
+      else exp[field] = field==='amount' ? parseFloat(ev.target.value)||0 : ev.target.value;
       saveState();
       render();
     });
@@ -1443,7 +1738,7 @@ function renderActualEntries(){
       <td class="rownum">${i+1}</td>
       <td>${catCell}</td>
       <td><input type="text" value="${escapeHtml(a.item)}" data-id="${a.id}" data-field="item"></td>
-      <td><input class="amt" type="number" step="0.01" value="${a.amount}" data-id="${a.id}" data-field="amount"></td>
+      <td><input class="amt" type="text" inputmode="decimal" step="0.01" value="${a.amount}" data-id="${a.id}" data-field="amount"></td>
       <td class="actions-cell"><button class="icon-btn" data-delactual="${a.id}" title="Remove">✕</button></td>
     `;
     tbody.appendChild(tr);
@@ -1693,55 +1988,72 @@ function importBankStatement(file){
 
 /* ============================= INCOME ============================= */
 
-function earnerDisplayAmount(p){
-  return state.income.frequency==='FORTNIGHTLY' ? (p.monthly * 12/26) : p.monthly;
-}
+// Each earner has their own pay frequency, so a household can mix fortnightly and
+// monthly pay. Monthly income is a straight sum, with no averaging over a year:
+//   fortnightly pay x 2 (two pays a month) + monthly pay x 1.
+// The two "third pay" months a fortnightly earner gets each year aren't counted in
+// the monthly budget; they arrive as extra. The yearly total counts actual pays.
+// Each earner's pay is stored as that monthly figure (p.monthly), which everything
+// else in the app uses; the amount actually paid is derived back from it.
+const PAYS_PER_MONTH = { FORTNIGHTLY: 2, MONTHLY: 1 };
+const PAYS_PER_YEAR  = { FORTNIGHTLY: 26, MONTHLY: 12 };
+function earnerFreq(p){ return (p && PAYS_PER_MONTH[p.frequency]) ? p.frequency : 'FORTNIGHTLY'; }
+function earnerPayAmount(p){ return (Number(p.monthly)||0) / PAYS_PER_MONTH[earnerFreq(p)]; }
+function earnerYearly(p){ return earnerPayAmount(p) * PAYS_PER_YEAR[earnerFreq(p)]; }
+function totalYearlyIncome(){ return state.income.earners.reduce((s,p)=> s + earnerYearly(p), 0); }
+function anyFortnightlyEarner(){ return state.income.earners.some(p=> earnerFreq(p)==='FORTNIGHTLY'); }
 
 function renderIncome(root){
-  const freq = state.income.frequency;
   root.innerHTML = `
     <h2>Income</h2>
-    <p class="lede">Add each person's pay. Switch the toggle to match how you actually get paid — figures convert automatically wherever they're used.</p>
+    <p class="lede">Add each person's pay and how often they're paid. The monthly figure is a straight sum: fortnightly pay counts as two pays a month, monthly pay as one.</p>
 
-    <div class="block-head"><h3>Pay frequency</h3></div>
-    <div class="freq-toggle" id="freqToggle">
-      <button data-f="FORTNIGHTLY" class="${freq==='FORTNIGHTLY'?'active':''}">Fortnightly</button>
-      <button data-f="MONTHLY" class="${freq==='MONTHLY'?'active':''}">Monthly</button>
-    </div>
-
-    <div class="block-head" style="margin-top:24px;"><h3>Earners</h3></div>
+    <div class="block-head" style="margin-top:8px;"><h3>Earners</h3></div>
+    <div class="earner-row head"><span>Name</span><span>Paid</span><span class="num">Amount per pay</span><span class="num pm">Per month</span><span></span></div>
     <div id="earnerList"></div>
-    <button class="btn small ghost" id="addEarner">+ Add earner</button>
+    <button class="btn small ghost" id="addEarner" style="margin-top:10px;">+ Add earner</button>
 
     <div class="income-summary">
-      <div class="mini-card"><div class="label">Fortnightly total</div><div class="value" id="incFortnight">$0</div></div>
       <div class="mini-card"><div class="label">Monthly total</div><div class="value" id="incMonthly">$0</div></div>
       <div class="mini-card"><div class="label">Yearly total</div><div class="value" id="incYearly">$0</div></div>
     </div>
+    <p id="incNote" style="font-size:12.5px; color:var(--ink-soft); margin:10px 0 0; max-width:62ch;"></p>
   `;
 
   const list = document.getElementById('earnerList');
   state.income.earners.forEach(p=>{
+    const f = earnerFreq(p);
     const row = document.createElement('div');
     row.className = 'earner-row';
     row.innerHTML = `
-      <input type="text" value="${escapeHtml(p.name)}" data-id="${p.id}" data-field="name" placeholder="Name">
-      <input type="number" step="0.01" value="${earnerDisplayAmount(p).toFixed(2)}" data-id="${p.id}" data-field="amount">
+      <input type="text" value="${escapeHtml(p.name)}" data-id="${p.id}" data-field="name" placeholder="Name" aria-label="Name">
+      <select data-id="${p.id}" data-field="frequency" aria-label="How often ${escapeHtml(p.name)} is paid">
+        <option value="FORTNIGHTLY" ${f==='FORTNIGHTLY'?'selected':''}>Fortnightly</option>
+        <option value="MONTHLY" ${f==='MONTHLY'?'selected':''}>Monthly</option>
+      </select>
+      <input type="text" inputmode="decimal" value="${earnerPayAmount(p).toFixed(2)}" data-id="${p.id}" data-field="amount" aria-label="Amount per pay">
+      <span class="num pm">${fmt(Number(p.monthly)||0)}</span>
       <button class="icon-btn" data-del="${p.id}" title="Remove">✕</button>
     `;
     list.appendChild(row);
   });
   if(state.income.earners.length===0) list.innerHTML = '<div class="empty">No earners added yet.</div>';
 
-  list.querySelectorAll('input').forEach(el=>{
+  list.querySelectorAll('input,select').forEach(el=>{
     el.addEventListener('change', (ev)=>{
       const id = ev.target.dataset.id, field = ev.target.dataset.field;
       const p = state.income.earners.find(x=>x.id===id);
       if(!p) return;
       if(field==='name') p.name = ev.target.value;
-      else {
-        const val = parseFloat(ev.target.value)||0;
-        p.monthly = state.income.frequency==='FORTNIGHTLY' ? (val*26/12) : val;
+      else if(field==='frequency'){
+        // Keep the amount per pay the same and change how often it arrives,
+        // e.g. $3,000 fortnightly -> $3,000 monthly.
+        const pay = earnerPayAmount(p);
+        p.frequency = ev.target.value;
+        p.monthly = pay * PAYS_PER_MONTH[earnerFreq(p)];
+      } else {
+        const val = Math.max(0, parseFloat(ev.target.value)||0);
+        p.monthly = val * PAYS_PER_MONTH[earnerFreq(p)];
       }
       saveState(); render();
     });
@@ -1755,24 +2067,63 @@ function renderIncome(root){
   });
 
   document.getElementById('addEarner').addEventListener('click', ()=>{
-    state.income.earners.push({ id:newId(), name:'New earner', monthly:0 });
+    state.income.earners.push({ id:newId(), name:'New earner', monthly:0, frequency:'FORTNIGHTLY' });
     saveState(); render();
   });
 
-  document.getElementById('freqToggle').querySelectorAll('button').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      state.income.frequency = btn.dataset.f;
-      saveState(); render();
-    });
-  });
-
-  const monthly = totalMonthlyIncome();
-  document.getElementById('incFortnight').textContent = fmt(monthly*12/26);
+  const monthly = totalMonthlyIncome(), yearly = totalYearlyIncome();
   document.getElementById('incMonthly').textContent = fmt(monthly);
-  document.getElementById('incYearly').textContent = fmt(monthly*12);
+  document.getElementById('incYearly').textContent = fmt(yearly);
+  const extra = yearly - monthly*12;
+  document.getElementById('incNote').textContent = extra > 0.005
+    ? `The yearly total is ${fmt(extra)} more than 12 × the monthly total. That's the two extra fortnightly pays each year (months with three pays), which aren't counted in the monthly budget.`
+    : '';
 }
 
 /* ============================= SAVINGS ============================= */
+
+// A goal's split is stored as { personName: percent }. No stored split (or one that
+// doesn't mention anyone currently in the household) means "split evenly".
+function bucketSplit(b){
+  const users = state.users;
+  if(!users.length) return {};
+  const stored = b.split || {};
+  const custom = users.some(u=> stored[u] !== undefined);
+  const out = {};
+  users.forEach(u=>{ out[u] = custom ? (Number(stored[u])||0) : 100/users.length; });
+  return out;
+}
+function isCustomSplit(b){ return state.users.some(u=> b.split && b.split[u] !== undefined); }
+function savingsByPerson(){
+  const totals = {}; state.users.forEach(u=> totals[u]=0);
+  let unallocated = 0;
+  state.savings.buckets.forEach(b=>{
+    const split = bucketSplit(b);
+    let pctSum = 0;
+    state.users.forEach(u=>{ totals[u] += (Number(b.monthly)||0) * split[u] / 100; pctSum += split[u]; });
+    unallocated += (Number(b.monthly)||0) * Math.max(0, 100 - pctSum) / 100;
+  });
+  return { totals, unallocated };
+}
+function fmtPct(n){ return (Math.round(n*10)/10).toString(); }
+
+function splitRowHtml(b){
+  if(!state.users.length){
+    return `<div class="split-row"><span class="split-label">Split</span><span style="color:var(--ink-soft);">Add people in Settings to split this goal between them.</span></div>`;
+  }
+  const split = bucketSplit(b);
+  const total = state.users.reduce((s,u)=> s + split[u], 0);
+  const people = state.users.map((u,i)=> `
+    <span class="split-person">
+      <span class="dot" style="background:${colorForPerson(u,i)}"></span>
+      <span>${escapeHtml(u)}</span>
+      <input class="split-pct" type="text" inputmode="decimal" value="${fmtPct(split[u])}" data-id="${escapeHtml(b.id)}" data-person="${escapeHtml(u)}" aria-label="${escapeHtml(u)} share in percent">%
+      <span class="amt">${fmt((Number(b.monthly)||0) * split[u] / 100)}/mo</span>
+    </span>`).join('');
+  const warn = Math.abs(total-100) > 0.05 ? `<span class="split-warn">Adds up to ${fmtPct(total)}%, not 100%</span>` : '';
+  const even = isCustomSplit(b) ? `<button class="split-even" data-split-even="${escapeHtml(b.id)}">Split evenly</button>` : '';
+  return `<div class="split-row"><span class="split-label">Split</span>${people}${warn}${even}</div>`;
+}
 
 function renderSavings(root){
   const totalMonthly = totalMonthlySavings();
@@ -1783,6 +2134,8 @@ function renderSavings(root){
 
     <div id="bucketList"></div>
     <button class="btn small ghost" id="addBucket">+ Add savings goal</button>
+
+    <div id="savingsByPerson"></div>
 
     <div class="income-summary" style="margin-top:26px;">
       <div class="mini-card"><div class="label">Total monthly savings</div><div class="value">${fmt(totalMonthly)}</div></div>
@@ -1801,8 +2154,8 @@ function renderSavings(root){
     div.innerHTML = `
       <div class="bucket-top">
         <div class="field"><label>Goal name</label><input type="text" value="${escapeHtml(b.name)}" data-id="${b.id}" data-field="name"></div>
-        <div class="field"><label>Target ($)</label><input type="number" step="1" value="${b.target}" data-id="${b.id}" data-field="target"></div>
-        <div class="field"><label>Monthly contribution ($)</label><input type="number" step="1" value="${b.monthly}" data-id="${b.id}" data-field="monthly"></div>
+        <div class="field"><label>Target ($)</label><input type="text" inputmode="decimal" step="1" value="${b.target}" data-id="${b.id}" data-field="target"></div>
+        <div class="field"><label>Monthly contribution ($)</label><input type="text" inputmode="decimal" step="1" value="${b.monthly}" data-id="${b.id}" data-field="monthly"></div>
         <button class="icon-btn" data-del="${b.id}" title="Remove">✕</button>
       </div>
       <div class="progress-track"><div class="progress-fill" style="width:${progressPct}%; background:${colorFor('__savings__') , resolveVar('var(--savings)')}"></div></div>
@@ -1810,12 +2163,50 @@ function renderSavings(root){
         <span>${fmt(b.start)} saved of ${fmt(b.target)}</span>
         <span>${b.monthly>0 && b.target>b.start ? Math.ceil((b.target-b.start)/b.monthly) + ' months to go' : (b.target<=b.start ? 'Goal reached' : 'No contribution set')}</span>
       </div>
+      ${splitRowHtml(b)}
     `;
     list.appendChild(div);
   });
   if(state.savings.buckets.length===0) list.innerHTML = '<div class="empty">No savings goals yet.</div>';
 
-  list.querySelectorAll('input').forEach(el=>{
+  list.querySelectorAll('input.split-pct').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      const b = state.savings.buckets.find(x=> x.id===el.dataset.id);
+      if(!b) return;
+      const split = bucketSplit(b);
+      const person = el.dataset.person;
+      const v = Math.max(0, Math.min(100, parseFloat(el.value)||0));
+      split[person] = v;
+      // With two people, keep the pair adding up to 100% automatically.
+      if(state.users.length===2){
+        const other = state.users.find(u=> u!==person);
+        split[other] = 100 - v;
+      }
+      b.split = split;
+      saveState(); render();
+    });
+  });
+  list.querySelectorAll('[data-split-even]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const b = state.savings.buckets.find(x=> x.id===btn.dataset.splitEven);
+      if(!b) return;
+      b.split = {};
+      saveState(); render();
+    });
+  });
+
+  const byPerson = document.getElementById('savingsByPerson');
+  if(state.users.length && state.savings.buckets.length){
+    const { totals, unallocated } = savingsByPerson();
+    byPerson.innerHTML = `
+      <div class="block-head" style="margin-top:26px;"><h3>Monthly savings by person</h3></div>
+      <div class="income-summary" style="margin-top:0;">
+        ${state.users.map((u,i)=> `<div class="mini-card"><div class="label">${escapeHtml(u)}</div><div class="value">${fmt(totals[u])}</div></div>`).join('')}
+        ${unallocated > 0.004 ? `<div class="mini-card"><div class="label">Not allocated</div><div class="value" style="color:var(--warn)">${fmt(unallocated)}</div></div>` : ''}
+      </div>`;
+  }
+
+  list.querySelectorAll('input:not(.split-pct)').forEach(el=>{
     el.addEventListener('change', (ev)=>{
       const id = ev.target.dataset.id, field = ev.target.dataset.field;
       const b = state.savings.buckets.find(x=>x.id===id);
@@ -1884,12 +2275,12 @@ function renderForecast(root){
       </div>
       <div class="fc-field">
         <label>Annual income growth</label>
-        <input type="number" id="fcIncomeGrowth" step="0.5" value="${state.forecast.incomeGrowth}">
+        <input type="text" inputmode="decimal" id="fcIncomeGrowth" step="0.5" value="${state.forecast.incomeGrowth}">
         <div class="fc-val">% per year</div>
       </div>
       <div class="fc-field">
         <label>Annual expense inflation</label>
-        <input type="number" id="fcInflation" step="0.5" value="${state.forecast.expenseInflation}">
+        <input type="text" inputmode="decimal" id="fcInflation" step="0.5" value="${state.forecast.expenseInflation}">
         <div class="fc-val">% per year</div>
       </div>
     </div>
@@ -2086,8 +2477,7 @@ function buildWorkbook(includeData){
   const incRows = [['Name','Pay Frequency (Fortnightly/Monthly)','Amount']];
   if(includeData){
     state.income.earners.forEach(p=>{
-      const amt = state.income.frequency==='FORTNIGHTLY' ? (p.monthly*12/26) : p.monthly;
-      incRows.push([p.name, titleCase(state.income.frequency), Number(amt.toFixed(2))]);
+      incRows.push([p.name, titleCase(earnerFreq(p)), Number(earnerPayAmount(p).toFixed(2))]);
     });
   } else {
     incRows.push(['Example: Alex — delete this row','Fortnightly',2400]);
@@ -2162,12 +2552,15 @@ function buildCustomWorkbook(selected){
   const has = (k)=> selected.includes(k);
 
   if(has('expenses')){
-    const rows = [['ID','Category','Item','Who','Frequency','Amount','Monthly Equivalent']];
+    // Account and Done are added at the end so the existing column positions (which
+    // the importer relies on) don't move.
+    const accName = id=>{ const a = state.accounts.find(x=> x.id===id); return a ? a.name : ''; };
+    const rows = [['ID','Category','Item','Who','Frequency','Amount','Monthly Equivalent','Account','Done']];
     state.expenses.forEach(e=> rows.push([
-      e.id, titleCase(e.category), e.item, e.person, titleCase(e.frequency), Number(e.amount)||0, Number(monthlyOf(e).toFixed(2))
+      e.id, titleCase(e.category), e.item, e.person, titleCase(e.frequency), Number(e.amount)||0, Number(monthlyOf(e).toFixed(2)), accName(e.account), e.actioned ? 'Yes' : 'No'
     ]));
     const sheet = XLSX.utils.aoa_to_sheet(rows);
-    sheet['!cols'] = [{wch:14},{wch:16},{wch:26},{wch:10},{wch:11},{wch:11},{wch:16}];
+    sheet['!cols'] = [{wch:14},{wch:16},{wch:26},{wch:10},{wch:11},{wch:11},{wch:16},{wch:20},{wch:6}];
     XLSX.utils.book_append_sheet(wb, sheet, 'Expenses');
   }
 
@@ -2182,8 +2575,7 @@ function buildCustomWorkbook(selected){
   if(has('income')){
     const rows = [['ID','Name','Pay Frequency','Amount']];
     state.income.earners.forEach(p=>{
-      const amt = state.income.frequency==='FORTNIGHTLY' ? (p.monthly*12/26) : p.monthly;
-      rows.push([p.id, p.name, titleCase(state.income.frequency), Number(amt.toFixed(2))]);
+      rows.push([p.id, p.name, titleCase(earnerFreq(p)), Number(earnerPayAmount(p).toFixed(2))]);
     });
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     sheet['!cols'] = [{wch:14},{wch:20},{wch:16},{wch:11}];
@@ -2191,10 +2583,14 @@ function buildCustomWorkbook(selected){
   }
 
   if(has('savings')){
-    const rows = [['ID','Goal Name','Target','Starting Balance','Monthly Contribution']];
-    state.savings.buckets.forEach(b=> rows.push([b.id, b.name, Number(b.target)||0, Number(b.start)||0, Number(b.monthly)||0]));
+    const rows = [['ID','Goal Name','Target','Starting Balance','Monthly Contribution','Split']];
+    state.savings.buckets.forEach(b=>{
+      const split = bucketSplit(b);
+      const splitText = state.users.map(u=> `${u} ${fmtPct(split[u])}%`).join(' / ');
+      rows.push([b.id, b.name, Number(b.target)||0, Number(b.start)||0, Number(b.monthly)||0, splitText]);
+    });
     const sheet = XLSX.utils.aoa_to_sheet(rows);
-    sheet['!cols'] = [{wch:14},{wch:24},{wch:11},{wch:14},{wch:16}];
+    sheet['!cols'] = [{wch:14},{wch:24},{wch:11},{wch:14},{wch:16},{wch:26}];
     XLSX.utils.book_append_sheet(wb, sheet, 'Savings');
   }
 
@@ -2208,6 +2604,17 @@ function buildCustomWorkbook(selected){
     const sheet = XLSX.utils.aoa_to_sheet(rows);
     sheet['!cols'] = [{wch:14},{wch:18},{wch:14},{wch:16},{wch:24},{wch:10},{wch:11},{wch:11},{wch:16}];
     XLSX.utils.book_append_sheet(wb, sheet, 'Scenarios');
+
+    const savRows = [['Scenario ID','Scenario Name','Goal ID','Goal','Target','Monthly Contribution','Split']];
+    state.scenarios.forEach(s=>{
+      (s.savings||[]).forEach(b=>{
+        const split = bucketSplit(b);
+        savRows.push([s.id, s.name, b.id, b.name, Number(b.target)||0, Number(b.monthly)||0, state.users.map(u=> `${u} ${fmtPct(split[u])}%`).join(' / ')]);
+      });
+    });
+    const savSheet = XLSX.utils.aoa_to_sheet(savRows);
+    savSheet['!cols'] = [{wch:14},{wch:18},{wch:14},{wch:22},{wch:11},{wch:18},{wch:26}];
+    XLSX.utils.book_append_sheet(wb, savSheet, 'Scenario Savings');
   }
 
   if(has('categories')){
@@ -2328,15 +2735,15 @@ function importWorkbook(file){
       const name = String(nameRaw).trim();
       const freqU = String(freqRaw||'Monthly').trim().toUpperCase().startsWith('FORT') ? 'FORTNIGHTLY' : 'MONTHLY';
       const amount = parseFloat(amountRaw) || 0;
-      const monthly = freqU==='FORTNIGHTLY' ? amount*26/12 : amount;
+      const monthly = amount * PAYS_PER_MONTH[freqU];
 
       const id = idRaw ? String(idRaw).trim() : '';
       const existingById = id ? state.income.earners.find(p=> p.id===id) : null;
       const existing = existingById || state.income.earners.find(p=> p.name.trim().toLowerCase()===name.toLowerCase());
       if(existing){
         if(existingById) existing.name = name;
-        existing.monthly = monthly; updated++;
-      } else { state.income.earners.push({ id: id || newId(), name, monthly }); added++; }
+        existing.monthly = monthly; existing.frequency = freqU; updated++;
+      } else { state.income.earners.push({ id: id || newId(), name, monthly, frequency: freqU }); added++; }
     });
 
     const savHasId = sheetHasIdColumn(wb, 'Savings');
@@ -2405,6 +2812,19 @@ function scenarioCategoryTotals(scenario){
 function freshScenarioExpenses(source){
   return JSON.parse(JSON.stringify(source)).map(e=> ({ ...e, id:newId() }));
 }
+function freshScenarioSavings(source){
+  return JSON.parse(JSON.stringify(source||[])).map(b=> ({ ...b, id:newId(), split:b.split||{} }));
+}
+function scenarioSavingsTotal(scenario){
+  return (scenario.savings||[]).reduce((s,b)=> s + (Number(b.monthly)||0), 0);
+}
+// Scenarios created before savings were part of them only hold expenses. Give them a
+// copy of the current live goals, so they start out matching the live budget.
+function ensureScenarioSavings(scenario){
+  if(Array.isArray(scenario.savings)) return false;
+  scenario.savings = freshScenarioSavings(state.savings.buckets);
+  return true;
+}
 
 function renderScenarios(root){
   if(!scenarioSelectedId && state.scenarios.length) scenarioSelectedId = state.scenarios[0].id;
@@ -2426,7 +2846,7 @@ function renderScenarios(root){
     btn.addEventListener('click', ()=>{ scenarioSelectedId = btn.dataset.sid; render(); });
   });
   document.getElementById('newScenarioBtn').addEventListener('click', ()=>{
-    const s = { id:newId(), name:'Scenario '+(state.scenarios.length+1), expenses: freshScenarioExpenses(state.expenses) };
+    const s = { id:newId(), name:'Scenario '+(state.scenarios.length+1), expenses: freshScenarioExpenses(state.expenses), savings: freshScenarioSavings(state.savings.buckets) };
     state.scenarios.push(s);
     scenarioSelectedId = s.id;
     saveState(); render();
@@ -2438,9 +2858,19 @@ function renderScenarios(root){
     return;
   }
 
-  const liveTotal = totalMonthlyExpenses();
-  const scenTotal = scenarioTotal(scenario);
-  const diff = scenTotal - liveTotal;
+  if(ensureScenarioSavings(scenario)) saveState();
+  const income = totalMonthlyIncome();
+  const liveExp = totalMonthlyExpenses(), scenExp = scenarioTotal(scenario);
+  const liveSav = totalMonthlySavings(), scenSav = scenarioSavingsTotal(scenario);
+  const liveLeft = income - liveExp - liveSav, scenLeft = income - scenExp - scenSav;
+  // Colour the difference by whether it's good news: spending more is bad, ending
+  // the month with more left over is good. Saving more or less is shown neutrally,
+  // since its effect already shows up in "Left over".
+  const diffCell = (d, goodWhenUp)=>{
+    if(Math.abs(d) < 0.005) return `<td class="num">—</td>`;
+    const col = goodWhenUp===null ? 'var(--ink)' : ((d>0)===goodWhenUp ? 'var(--good)' : 'var(--warn)');
+    return `<td class="num" style="color:${col}; font-weight:600;">${d>0?'+':''}${fmt(d)}</td>`;
+  };
 
   body.innerHTML = `
     <div class="scenario-header">
@@ -2452,14 +2882,24 @@ function renderScenarios(root){
       </div>
     </div>
 
-    <div class="bva-summary">
-      <div class="mini-card"><div class="label">Live budget</div><div class="value">${fmt(liveTotal)}</div></div>
-      <div class="mini-card"><div class="label">This scenario</div><div class="value">${fmt(scenTotal)}</div></div>
-      <div class="mini-card"><div class="label">Difference</div><div class="value" style="color:${diff>0? resolveVar('var(--warn)') : resolveVar('var(--good)')}">${diff>0?'+':''}${fmt(diff)}</div></div>
+    <div class="scen-compare-wrap">
+      <table class="scen-compare">
+        <thead><tr><th></th><th class="num">Live budget</th><th class="num">This scenario</th><th class="num">Difference</th></tr></thead>
+        <tbody>
+          <tr><td>Expenses</td><td class="num">${fmt(liveExp)}</td><td class="num">${fmt(scenExp)}</td>${diffCell(scenExp-liveExp, false)}</tr>
+          <tr><td>Savings</td><td class="num">${fmt(liveSav)}</td><td class="num">${fmt(scenSav)}</td>${diffCell(scenSav-liveSav, null)}</tr>
+          <tr class="total"><td>Left over <span style="font-weight:400; color:var(--ink-soft);">(of ${fmt(income)} income)</span></td>
+            <td class="num" style="color:${liveLeft<0?'var(--warn)':'inherit'}">${fmt(liveLeft)}</td>
+            <td class="num" style="color:${scenLeft<0?'var(--warn)':'inherit'}">${fmt(scenLeft)}</td>${diffCell(scenLeft-liveLeft, true)}</tr>
+        </tbody>
+      </table>
     </div>
 
     <div class="block-head"><h3>By category</h3><span class="hint">Dark tick marks your live budget</span></div>
     <div id="scenarioBvaTable"></div>
+
+    <div class="block-head" style="margin-top:28px;"><h3>Scenario savings goals</h3><span class="hint">Each goal keeps its per-person split from the Savings tab</span></div>
+    <div id="scenarioSavings"></div>
 
     <div class="block-head" style="margin-top:28px;"><h3>Scenario expenses</h3></div>
     <div id="scenarioGroups"></div>
@@ -2475,14 +2915,19 @@ function renderScenarios(root){
     saveState(); render();
   });
   document.getElementById('duplicateScenarioBtn').addEventListener('click', ()=>{
-    const copy = { id:newId(), name:scenario.name+' copy', expenses: freshScenarioExpenses(scenario.expenses) };
+    const copy = { id:newId(), name:scenario.name+' copy', expenses: freshScenarioExpenses(scenario.expenses), savings: freshScenarioSavings(scenario.savings) };
     state.scenarios.push(copy);
     scenarioSelectedId = copy.id;
     saveState(); render();
   });
   document.getElementById('applyScenarioBtn').addEventListener('click', ()=>{
-    if(!confirm(`Replace your live budget with "${scenario.name}"? Your current Expenses will be overwritten — the scenario itself stays here so you can compare again later.`)) return;
+    if(!confirm(`Replace your live budget with "${scenario.name}"? Your current expenses and savings goals will be overwritten — the scenario itself stays here so you can compare again later.`)) return;
+    // The live rows are replaced with fresh copies, so the old rows must be deleted
+    // from the database too — otherwise they reappear alongside the new ones on reload.
+    state.expenses.forEach(e=> syncDeleteRow('expenses', e.id));
+    state.savings.buckets.forEach(b=> syncDeleteRow('savings_buckets', b.id));
     state.expenses = freshScenarioExpenses(scenario.expenses);
+    state.savings.buckets = freshScenarioSavings(scenario.savings);
     scenario.expenses.forEach(e=>{
       const cat = (e.category||'').toUpperCase();
       if(cat && !state.categories.includes(cat)) state.categories.push(cat);
@@ -2497,6 +2942,7 @@ function renderScenarios(root){
   });
 
   renderScenarioBva(scenario);
+  renderScenarioSavings(scenario);
   renderScenarioGroups(scenario);
 
   document.getElementById('scenarioAddCatBtn').addEventListener('click', ()=>{
@@ -2505,6 +2951,52 @@ function renderScenarios(root){
     if(!name) return;
     const cat = name.toUpperCase();
     if(!state.categories.includes(cat)) state.categories.push(cat);
+    saveState(); render();
+  });
+}
+
+function renderScenarioSavings(scenario){
+  const wrap = document.getElementById('scenarioSavings');
+  const live = Object.fromEntries(state.savings.buckets.map(b=> [b.name.trim().toLowerCase(), b]));
+  const rows = scenario.savings.map(b=>{
+    const lb = live[(b.name||'').trim().toLowerCase()];
+    const delta = lb ? (Number(b.monthly)||0) - (Number(lb.monthly)||0) : null;
+    const deltaTxt = delta===null ? '<span style="color:var(--ink-soft);">new</span>'
+      : Math.abs(delta)<0.005 ? '<span style="color:var(--ink-soft);">—</span>'
+      : `<span style="font-weight:600;">${delta>0?'+':''}${fmt(delta)}</span>`;
+    return `<tr>
+      <td><input type="text" value="${escapeHtml(b.name)}" data-scen-bucket="${escapeHtml(b.id)}" data-field="name"></td>
+      <td><input class="amt" type="text" inputmode="decimal" value="${b.target}" data-scen-bucket="${escapeHtml(b.id)}" data-field="target"></td>
+      <td><input class="amt" type="text" inputmode="decimal" value="${b.monthly}" data-scen-bucket="${escapeHtml(b.id)}" data-field="monthly"></td>
+      <td class="amt">${deltaTxt}</td>
+      <td class="actions"><button class="icon-btn" data-scen-bucket-del="${escapeHtml(b.id)}" title="Remove goal">✕</button></td>
+    </tr>`;
+  }).join('');
+  wrap.innerHTML = `
+    <div class="cat-group"><div class="exp-scroll"><table class="exp" style="min-width:520px;">
+      <thead><tr><th style="width:36%">Goal</th><th style="width:20%">Target</th><th style="width:20%">Monthly</th><th style="width:16%" title="Monthly contribution compared with the live goal of the same name">vs live</th><th></th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="5" class="empty" style="padding:10px;">No savings goals in this scenario.</td></tr>`}</tbody>
+    </table></div>
+    <div class="add-row-bar"><button class="btn small ghost" id="scenAddBucketBtn">+ Add savings goal</button></div></div>`;
+
+  wrap.querySelectorAll('input[data-scen-bucket]').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      const b = scenario.savings.find(x=> x.id===el.dataset.scenBucket);
+      if(!b) return;
+      const f = el.dataset.field;
+      if(f==='name'){ const v = el.value.trim(); if(v) b.name = v; }
+      else b[f] = Math.max(0, parseFloat(el.value)||0);
+      saveState(); render();
+    });
+  });
+  wrap.querySelectorAll('[data-scen-bucket-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      scenario.savings = scenario.savings.filter(x=> x.id!==btn.dataset.scenBucketDel);
+      saveState(); render();
+    });
+  });
+  document.getElementById('scenAddBucketBtn').addEventListener('click', ()=>{
+    scenario.savings.push({ id:newId(), name:'New goal', target:1000, start:0, monthly:50, split:{} });
     saveState(); render();
   });
 }
@@ -2580,7 +3072,7 @@ function renderScenarioGroups(scenario){
             <option value="YEARLY" ${e.frequency==='YEARLY'?'selected':''}>Yearly</option>
           </select>
         </td>
-        <td><input class="amt" type="number" step="0.01" value="${e.amount}" data-id="${e.id}" data-field="amount"></td>
+        <td><input class="amt" type="text" inputmode="decimal" step="0.01" value="${e.amount}" data-id="${e.id}" data-field="amount"></td>
         <td class="amt">${fmt(monthlyOf(e), 2)}</td>
         <td class="actions"><button class="icon-btn" data-scendel="${e.id}" title="Remove">✕</button></td>
       `;
@@ -2665,6 +3157,12 @@ function itemsForCategory(cat){
   return state.expenses.filter(e=> (e.category||'').toUpperCase()===cat).sort((a,b)=> monthlyOf(b)-monthlyOf(a));
 }
 
+// One person's share of each savings goal, largest first.
+function saverShares(person){
+  return state.savings.buckets.map(b=> ({ bucket:b, amount:(Number(b.monthly)||0) * (bucketSplit(b)[person]||0) / 100 }))
+    .filter(s=> s.amount>0.004).sort((a,b)=> b.amount-a.amount);
+}
+
 function buildFlowTree(){
   const income = totalMonthlyIncome();
   const isActual = flowDataset === 'actual';
@@ -2693,14 +3191,31 @@ function buildFlowTree(){
       id:'person:'+p, label:p, value:totals[p], color:colorForPerson(p,i), parent:'expenses', kind:'person', key:p
     }));
   }
-  const bucketNodes = isActual ? [] : state.savings.buckets.filter(b=> b.monthly>0.004).map(b=> ({
-    id:'bucket:'+b.id, label:b.name, value:b.monthly, color:resolveVar('var(--savings)'), parent:'savings', kind:'bucket', key:b.id
-  }));
+  let bucketNodes;
+  if(isActual){
+    bucketNodes = [];
+  } else if(flowMode === 'person' && state.users.length){
+    // By person: divide the Savings branch by each person's share of every goal
+    // (from each goal's split on the Savings tab), plus anything left unallocated.
+    const { totals, unallocated } = savingsByPerson();
+    bucketNodes = state.users.map((u,i)=> ({
+      id:'saver:'+u, label:u+' · savings', value:totals[u], color:colorForPerson(u,i), parent:'savings', kind:'saver', key:u
+    })).filter(n=> n.value>0.004).sort((a,b)=> b.value-a.value);
+    if(unallocated>0.004) bucketNodes.push({ id:'saver-unallocated', label:'Not allocated', value:unallocated, color:resolveVar('var(--ink-soft)'), parent:'savings', kind:'saver-unallocated' });
+  } else {
+    bucketNodes = state.savings.buckets.filter(b=> b.monthly>0.004).map(b=> ({
+      id:'bucket:'+b.id, label:b.name, value:b.monthly, color:resolveVar('var(--savings)'), parent:'savings', kind:'bucket', key:b.id
+    }));
+  }
   const col2 = [...branchNodes, ...bucketNodes];
 
   let col3 = [];
   const expandedNode = flowExpandedId ? col2.find(n=> n.id===flowExpandedId) : null;
-  if(expandedNode && (expandedNode.kind==='category' || expandedNode.kind==='person')){
+  if(expandedNode && expandedNode.kind==='saver'){
+    col3 = saverShares(expandedNode.key).map(s=> ({
+      id:'share:'+s.bucket.id+':'+expandedNode.key, label:s.bucket.name, value:s.amount, color:expandedNode.color, parent:expandedNode.id
+    }));
+  } else if(expandedNode && (expandedNode.kind==='category' || expandedNode.kind==='person')){
     const items = isActual ? itemsForCategoryActual(expandedNode.key)
       : (expandedNode.kind==='category' ? itemsForCategory(expandedNode.key) : itemsForPerson(expandedNode.key));
     col3 = items.filter(e=> (isActual?Number(e.amount)||0:monthlyOf(e)) > 0.004).map(e=> ({
@@ -2724,7 +3239,13 @@ function flowNodeInfo(tree, id){
     return { label:node.label, value:node.value, rows: tree.col2.filter(n=>n.parent==='expenses').map(n=>({label:n.label,value:n.value})), rowsLabel: tree.isActual ? 'By category' : (flowMode==='category' ? 'By category' : 'By person') };
   }
   if(id==='savings'){
-    return { label:'Savings', value:node.value, rows: tree.col2.filter(n=>n.parent==='savings').map(n=>({label:n.label,value:n.value})), rowsLabel:'By goal' };
+    return { label:'Savings', value:node.value, rows: tree.col2.filter(n=>n.parent==='savings').map(n=>({label:n.label,value:n.value})), rowsLabel: (flowMode==='person' && state.users.length) ? 'By person' : 'By goal' };
+  }
+  if(node.kind==='saver'){
+    return { label:node.label, value:node.value, rows: saverShares(node.key).map(s=>({label:s.bucket.name, value:s.amount})), rowsLabel:node.key+"'s share of each goal" };
+  }
+  if(node.kind==='saver-unallocated'){
+    return { label:node.label, value:node.value, rows:[], rowsLabel:'' , note:'Part of a goal whose split adds up to less than 100% — adjust it on the Savings tab.' };
   }
   if(node.kind==='category'){
     const items = tree.isActual ? itemsForCategoryActual(node.key) : itemsForCategory(node.key);
@@ -2848,6 +3369,7 @@ function renderFlowPanel(tree){
     <h4>${escapeHtml(info.label)}</h4>
     <div class="amt-big">${fmt(info.value)}<span style="font-size:12px; color:var(--ink-soft); font-weight:500;"> /mo</span></div>
     <div class="pct-line">${pct2(pct)} of monthly income</div>
+    ${info.note ? `<p style="font-size:12px; color:var(--warn); margin:0 0 10px;">${escapeHtml(info.note)}</p>` : ''}
     ${info.rows.length ? `<div class="hint" style="font-size:11px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:4px;">${escapeHtml(info.rowsLabel)}</div>
     <ul class="sub-list">${info.rows.map(r=> `<li><span class="n">${escapeHtml(r.label)}</span><span class="v">${fmt(r.value)}</span></li>`).join('')}</ul>` : ''}
     <div class="flow-hint">${flowExpandedId ? 'Click the highlighted bar again to collapse it.' : 'Click a category or person bar to see its individual items.'}</div>
@@ -3007,7 +3529,7 @@ function drawFlowDiagram(tree){
       if(earners.length) lines.push(earners.map(p=> p.name+' '+fmt(p.monthly)).join(' · '));
     } else if(n.id==='expenses' || n.id==='savings'){
       const kids = tree.col2.filter(k=> k.parent===n.id);
-      const noun = n.id==='expenses' ? (flowMode==='category' ? 'categories' : 'people') : 'goals';
+      const noun = n.id==='expenses' ? (flowMode==='category' ? 'categories' : 'people') : ((flowMode==='person' && state.users.length) ? 'people' : 'goals');
       lines.push(kids.length + ' ' + noun);
     } else if(n.kind==='category' || n.kind==='person'){
       const items = tree.isActual ? itemsForCategoryActual(n.key) : (n.kind==='category' ? itemsForCategory(n.key) : itemsForPerson(n.key));
@@ -3015,6 +3537,13 @@ function drawFlowDiagram(tree){
       lines.push(items.length + ' item' + (items.length===1?'':'s'));
       if(items[0]) lines.push('Largest: ' + items[0].item + ' (' + fmt(itemOf(items[0])) + ')');
       lines.push(pct2(n.value/((tree.isActual?totalActual():totalMonthlyExpenses())||1)) + ' of all ' + (tree.isActual?'actual spending':'expenses'));
+    } else if(n.kind==='saver'){
+      const shares = saverShares(n.key);
+      lines.push(shares.length + ' goal' + (shares.length===1?'':'s'));
+      if(shares[0]) lines.push('Largest: ' + shares[0].bucket.name + ' (' + fmt(shares[0].amount) + ')');
+      lines.push(pct2(n.value/(totalMonthlySavings()||1)) + ' of all savings');
+    } else if(n.kind==='saver-unallocated'){
+      lines.push('A goal\'s split adds up to less than 100%');
     } else if(n.kind==='bucket'){
       const b = state.savings.buckets.find(x=> 'bucket:'+x.id===n.id);
       if(b){
@@ -3088,7 +3617,7 @@ function drawFlowDiagram(tree){
     if(clickable){
       g.addEventListener('click', ()=>{
         flowSelectedId = n.id;
-        if(n.kind==='category' || n.kind==='person'){
+        if(n.kind==='category' || n.kind==='person' || n.kind==='saver'){
           flowExpandedId = (flowExpandedId===n.id) ? null : n.id;
         } else if(n.id==='expenses' || n.id==='savings'){
           flowExpandedId = null;
@@ -3224,7 +3753,40 @@ function renderSettings(root){
       <input type="text" id="newCatInput2" placeholder="Add a category, e.g. Childcare">
       <button class="btn small ghost" id="addCatBtn2">+ Add category</button>
     </div>
+
+    <div class="block-head" style="margin-top:32px;"><h3>Account</h3><span class="hint">Signed in as ${escapeHtml(session.user.email||'')}</span></div>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px;">
+      <button class="btn small ghost" id="settingsSignOutBtn">Sign out</button>
+      <a class="btn small ghost" href="privacy.html" target="_blank" rel="noopener" style="text-decoration:none;">Privacy policy</a>
+    </div>
+    <div class="danger-zone">
+      <h4>Delete account</h4>
+      <p>Permanently deletes your sign-in and removes you from this household. If you're the only member, the household and all of its budget data are deleted too. If someone else is still a member, the household stays for them. This can't be undone.</p>
+      <div id="deleteStep1"><button class="btn small danger" id="deleteAccountBtn">Delete my account…</button></div>
+      <div id="deleteStep2" style="display:none;">
+        <p style="margin-bottom:8px;">Type <strong>DELETE</strong> to confirm.</p>
+        <div class="add-inline" style="max-width:360px; margin-top:0;">
+          <input type="text" id="deleteConfirmInput" autocomplete="off" autocapitalize="characters">
+          <button class="btn small danger" id="deleteConfirmBtn">Delete permanently</button>
+          <button class="btn small ghost" id="deleteCancelBtn">Cancel</button>
+        </div>
+        <div class="io-status" id="deleteStatus"></div>
+      </div>
+    </div>
   `;
+
+  document.getElementById('settingsSignOutBtn').addEventListener('click', signOutEverywhere);
+  document.getElementById('deleteAccountBtn').addEventListener('click', ()=>{
+    document.getElementById('deleteStep1').style.display='none';
+    document.getElementById('deleteStep2').style.display='';
+    document.getElementById('deleteConfirmInput').focus();
+  });
+  document.getElementById('deleteCancelBtn').addEventListener('click', ()=>{
+    document.getElementById('deleteStep2').style.display='none';
+    document.getElementById('deleteStep1').style.display='';
+    document.getElementById('deleteConfirmInput').value='';
+  });
+  document.getElementById('deleteConfirmBtn').addEventListener('click', deleteMyAccount);
 
   document.getElementById('budgetNameInput').addEventListener('change', async (e)=>{
     const newName = e.target.value.trim() || 'Our household';
@@ -3350,6 +3912,9 @@ function renameUser(oldName, newName){
   if(!newName || newName===oldName){ render(); return; }
   state.users = state.users.map(u=> u===oldName ? newName : u);
   state.expenses.forEach(e=>{ if(e.person===oldName) e.person = newName; });
+  state.savings.buckets.forEach(b=>{
+    if(b.split && b.split[oldName]!==undefined){ b.split[newName] = b.split[oldName]; delete b.split[oldName]; }
+  });
   if(state.personColors[oldName] && !state.personColors[newName]){
     state.personColors[newName] = state.personColors[oldName];
     delete state.personColors[oldName];
@@ -3359,6 +3924,9 @@ function renameUser(oldName, newName){
 function deleteUser(name){
   state.users = state.users.filter(u=> u!==name);
   state.expenses.forEach(e=>{ if(e.person===name) e.person = 'All'; });
+  // Drop them from any savings split; the remaining people's shares are left as they
+  // were, and the goal shows a warning until they add back up to 100%.
+  state.savings.buckets.forEach(b=>{ if(b.split) delete b.split[name]; });
   delete state.personColors[name];
   saveState(); render();
 }
@@ -3377,11 +3945,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
   tab.addEventListener('click', ()=> setView(tab.dataset.view));
 });
 
-document.getElementById('signOutBtn').addEventListener('click', async ()=>{
-  if(realtimeChannel) sb.removeChannel(realtimeChannel);
-  await sb.auth.signOut();
-  window.location.reload();
-});
+document.getElementById('signOutBtn').addEventListener('click', signOutEverywhere);
 
 function loadSampleData(){
   if(!confirm('Load the sample household into your ledger? This adds demo expenses, income and savings goals.')) return;
@@ -3393,13 +3957,43 @@ function loadSampleData(){
   saveState(); render();
 }
 
+async function signOutEverywhere(){
+  if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  await sb.auth.signOut();
+  window.location.reload();
+}
+
+async function deleteMyAccount(){
+  const input = document.getElementById('deleteConfirmInput');
+  const status = document.getElementById('deleteStatus');
+  const btn = document.getElementById('deleteConfirmBtn');
+  const show = (msg, isErr)=>{ status.textContent = msg; status.className = 'io-status show ' + (isErr?'err':'ok'); };
+  if(input.value.trim().toUpperCase() !== 'DELETE'){ show('Type DELETE to confirm.', true); return; }
+  btn.disabled = true; show('Deleting…', false);
+  // Deleting a sign-in needs elevated rights the browser key doesn't have, so this
+  // calls a database function (delete_my_account, in schema.sql) that runs with
+  // those rights but can only ever act on the signed-in user's own account.
+  const { error } = await sb.rpc('delete_my_account');
+  if(error){
+    console.error('Account deletion failed', error);
+    btn.disabled = false;
+    show('Could not delete your account: ' + error.message, true);
+    return;
+  }
+  if(realtimeChannel) sb.removeChannel(realtimeChannel);
+  try{ await sb.auth.signOut(); }catch(e){ /* the session's user no longer exists */ }
+  household = null;
+  window.location.reload();
+}
+
 async function boot(){
   renderLoading('Setting up your ledger…');
   try{
     if(!household) household = await findHousehold();
     if(!household){ renderOnboarding(); return; }
-    await loadLedgerFromServer();
+    const { migrated } = await loadLedgerFromServer();
     subscribeRealtime();
+    if(migrated) saveState();
     document.getElementById('gateRoot').innerHTML = '';
     document.getElementById('appRoot').style.display = '';
     const badge = document.getElementById('whoBadge');
@@ -3412,13 +4006,27 @@ async function boot(){
 }
 
 async function handleNativeAuthRedirect(){
-  // Only relevant once wrapped with Capacitor and the App plugin is present.
+  // Only relevant inside the iOS app (Capacitor with the App plugin installed).
   if(!(window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App)) return;
   window.Capacitor.Plugins.App.addListener('appUrlOpen', async ({ url })=>{
-    if(url && url.includes('auth-callback')){
-      try{ await sb.auth.exchangeCodeForSession(url); }
-      catch(e){ console.error('OAuth redirect exchange failed', e); }
+    if(!url || !url.includes('auth-callback')) return;
+    const Browser = window.Capacitor.Plugins.Browser;
+    try{ if(Browser) await Browser.close(); }catch(e){ /* sheet may already be closed */ }
+    let params;
+    try{ params = new URL(url).searchParams; }catch(e){ console.error('Bad callback URL', url); return; }
+    if(params.get('error')){
+      renderLogin('Sign-in failed: ' + (params.get('error_description') || params.get('error')));
+      return;
     }
+    const code = params.get('code');
+    if(!code){ renderLogin('Sign-in failed: no authorisation code was returned.'); return; }
+    // supabase-js v2 expects just the code here, not the full callback URL.
+    const { error } = await sb.auth.exchangeCodeForSession(code);
+    if(error){
+      console.error('OAuth code exchange failed', error);
+      renderLogin('Sign-in failed: ' + error.message);
+    }
+    // On success, onAuthStateChange fires SIGNED_IN and boot() takes over.
   });
 }
 
@@ -3427,6 +4035,11 @@ async function handleNativeAuthRedirect(){
 
   handleNativeAuthRedirect();
 
+  // onAuthStateChange fires once immediately with the current session (INITIAL_SESSION) —
+  // including one just detected from the URL after a sign-in redirect — and again on any
+  // future change. That's the single source of truth; a separate getSession() call used to
+  // run right after this and could resolve later with a stale/null result, undoing a
+  // correct boot() and bouncing back to the login screen even after a valid sign-in.
   sb.auth.onAuthStateChange((event, sess)=>{
     session = sess;
     if(event === 'SIGNED_IN' || event === 'INITIAL_SESSION'){
