@@ -384,7 +384,8 @@
 
   @media (max-width: 880px){
     .app{ flex-direction:column; }
-    .rail{ width:100%; height:auto; position:relative; flex-direction:row; align-items:center; gap:6px; overflow:hidden; padding:12px;
+    .rail{ width:100%; height:auto; position:sticky; top:0; z-index:40; flex-direction:row; align-items:center; gap:6px; overflow:hidden; padding:12px;
+      box-shadow:0 1px 0 rgba(0,0,0,0.06), 0 4px 12px rgba(58,42,44,0.12);
       padding-top:calc(12px + env(safe-area-inset-top, 0px));
       padding-left:calc(12px + env(safe-area-inset-left, 0px)); padding-right:calc(12px + env(safe-area-inset-right, 0px)); }
     .main{ padding-bottom:env(safe-area-inset-bottom, 0px); }
@@ -592,17 +593,9 @@
 const SUPABASE_URL = 'https://hqotplhflmzsctdxcosl.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_Qj4p5QN5iNnvLKH-VvmKKg_wdOf7jvI';
 
-// The public website. Inside the iPhone app, pages such as the privacy policy are opened
-// from here, because the app's own internal addresses can't be opened by iOS.
 const PUBLIC_SITE_URL = 'https://ozcruz-glitch.github.io/money-manifest/';
 
 const sb = (SUPABASE_URL.startsWith('http') && window.supabase)
-  // PKCE flow — required for the native iOS build's deep-link handler below
-  // (exchangeCodeForSession only works with PKCE's code-based handoff; using implicit
-  // flow here while that handler expects PKCE was an inconsistency in its own right).
-  // The earlier "OAuth state parameter missing" failures turned out to be caused by
-  // SUPABASE_URL being set to the auth callback URL instead of the bare project URL —
-  // unrelated to PKCE vs implicit — so PKCE is safe to use now that that's fixed.
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, { auth: { flowType: 'pkce' } })
   : null;
 
@@ -619,8 +612,18 @@ function uuid(){
 
 /* ============================= AUTH & ONBOARDING UI ============================= */
 
+// Every full-screen panel (sign-in, loading, household setup, Face ID lock) goes through
+// here. It hides the app and clears what's on screen, so nothing can be left sitting
+// underneath a panel (where scrolling down would reveal it). The app is shown again only
+// by boot() or a successful Face ID unlock.
 function gate(html){
+  const app = document.getElementById('appRoot');
+  if(app) app.style.display = 'none';
+  const views = document.getElementById('views');
+  if(views) views.innerHTML = '';
+  if(typeof hideIdleWarning === 'function') hideIdleWarning();
   document.getElementById('gateRoot').innerHTML = `<div class="gate"><div class="gate-card">${html}</div></div>`;
+  window.scrollTo(0, 0);
 }
 
 function renderConfigMissing(){
@@ -741,7 +744,7 @@ function renderOnboarding(){
       <div class="d">Someone already started your household's ledger.</div>
     </button>
     <div class="join-form" id="joinForm">
-      <input type="text" id="joinCode" maxlength="6" placeholder="CODE">
+      <input type="text" id="joinCode" maxlength="8" placeholder="CODE" autocapitalize="characters" autocomplete="off">
       <button class="btn" style="width:100%;" id="joinSubmit">Join household</button>
     </div>
     <div id="onboardError"></div>
@@ -756,59 +759,35 @@ function renderOnboarding(){
   });
 }
 
-function randomInviteCode(){
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let out = '';
-  if(window.crypto && crypto.getRandomValues){
-    const bytes = new Uint8Array(6);
-    crypto.getRandomValues(bytes);
-    for(let i=0;i<6;i++) out += chars[bytes[i] % chars.length];
-  } else {
-    // Fallback only if the crypto API is unavailable in this browser context.
-    for(let i=0;i<6;i++) out += chars[Math.floor(Math.random()*chars.length)];
-  }
-  return out;
+
+// Creating and joining a household go through database functions (see schema.sql).
+// The database checks the invite code itself; the app can no longer list households
+// or add anyone to a household directly. Each function runs as a single transaction,
+// so a half-created household can't be left behind.
+function householdRpcError(error, fallback){
+  const msg = (error && error.message) || '';
+  if(/could not find the function|function .* does not exist|schema cache/i.test(msg))
+    return 'The database needs updating — run the security fix SQL in Supabase, then try again.';
+  return fallback || msg || 'Something went wrong. Please try again.';
 }
 
 async function createHousehold(){
-  // invite_code has a unique constraint in the database; a collision on a 6-character
-  // code is very unlikely but not impossible, so retry with a fresh code a few times
-  // rather than failing outright.
-  let data, error;
-  for(let attempt=0; attempt<5; attempt++){
-    ({ data, error } = await sb.from('households').insert({ invite_code: randomInviteCode() }).select().single());
-    if(!error || !/duplicate|unique/i.test(error.message||'')) break;
-  }
-  if(error){ showOnboardError(error.message); return; }
-
-  const { error: memberError } = await sb.from('household_members').insert({ household_id: data.id, user_id: session.user.id });
-  if(memberError){
-    // Without this row, findHousehold() can never locate this household again for this
-    // user — roll back the orphaned household row rather than leaving a dead end.
-    await sb.from('households').delete().eq('id', data.id);
-    showOnboardError('Could not finish setting up your household: ' + memberError.message + '. Please try again.');
-    return;
-  }
-
-  household = data;
-  const { error: settingsError } = await sb.from('ledger_settings').insert({
-    household_id: household.id,
-    users: [], categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)), category_colors: {}, person_colors: {}
-  });
-  if(settingsError){
-    // Less severe than a missing membership row — the app falls back to sensible
-    // defaults (see loadLedgerFromServer) — but still worth surfacing, not hiding.
-    console.error('Could not create initial ledger settings', settingsError);
-  }
+  const { data, error } = await sb.rpc('create_household', { p_categories: JSON.parse(JSON.stringify(DEFAULT_CATEGORIES)) });
+  if(error || !data){ showOnboardError(householdRpcError(error, 'Could not set up your household. Please try again.')); return; }
+  household = Array.isArray(data) ? data[0] : data;
   await boot();
 }
 
 async function joinHousehold(code){
-  const { data, error } = await sb.from('households').select('*').eq('invite_code', code).maybeSingle();
-  if(error || !data){ showOnboardError('No household found with that code. Double-check it and try again.'); return; }
-  const { error: joinErr } = await sb.from('household_members').insert({ household_id: data.id, user_id: session.user.id });
-  if(joinErr){ showOnboardError(joinErr.message); return; }
-  household = data;
+  const { data, error } = await sb.rpc('join_household', { p_code: code });
+  if(error || !data){
+    const msg = (error && error.message) || '';
+    showOnboardError(/No household found/i.test(msg) || !error
+      ? 'No household found with that code. Double-check it and try again.'
+      : householdRpcError(error));
+    return;
+  }
+  household = Array.isArray(data) ? data[0] : data;
   await boot();
 }
 
@@ -3985,7 +3964,8 @@ function renderSettings(root){
 
     <div class="block-head"><h3>Household</h3><span class="hint">Signed in as ${escapeHtml(session.user.email||'')}</span></div>
     <p style="font-size:12.5px; color:var(--ink-soft); margin:0 0 6px;">Share this code so your partner can join and see the same ledger.</p>
-    <div class="invite-box"><code id="inviteCodeText">${escapeHtml(household.invite_code)}</code><button class="btn small ghost" id="copyInviteBtn">Copy</button></div>
+    <div class="invite-box"><code id="inviteCodeText">${escapeHtml(household.invite_code)}</code><button class="btn small ghost" id="copyInviteBtn">Copy</button><button class="btn small ghost" id="newInviteBtn" title="Replace this code. The old one stops working.">New code</button></div>
+    <div class="io-status" id="inviteStatus"></div>
 
     <div class="field" style="max-width:360px; margin-top:16px;">
       <label>Budget name</label>
@@ -4121,6 +4101,20 @@ function renderSettings(root){
   });
 
   document.getElementById('loadSampleBtn').addEventListener('click', loadSampleData);
+  document.getElementById('newInviteBtn').addEventListener('click', async ()=>{
+    if(!confirm('Create a new invite code? The current code will stop working. People already in your household stay in it.')) return;
+    const status = document.getElementById('inviteStatus');
+    const { data, error } = await sb.rpc('regenerate_invite_code', { p_household: household.id });
+    if(error || !data){
+      status.textContent = householdRpcError(error, 'Could not create a new code. Please try again.');
+      status.className = 'io-status show err';
+      return;
+    }
+    household.invite_code = data;
+    document.getElementById('inviteCodeText').textContent = data;
+    status.textContent = 'New invite code created. The old one no longer works.';
+    status.className = 'io-status show ok';
+  });
   document.getElementById('copyInviteBtn').addEventListener('click', ()=>{
     const btn = document.getElementById('copyInviteBtn');
     navigator.clipboard.writeText(household.invite_code).then(()=>{
@@ -4601,7 +4595,14 @@ async function handleNativeAuthRedirect(){
       if(bootedUserId === session.user.id) return;
       boot();
     } else if(event === 'SIGNED_OUT'){
+      // Signed out from any source, including Supabase ending an expired session by
+      // itself (no page reload). Forget everything tied to the previous user, so a
+      // different person signing in next doesn't inherit their household.
       bootedUserId = null;
+      household = null;
+      ledgerLoaded = false;
+      appUnlocked = false;
+      if(realtimeChannel){ sb.removeChannel(realtimeChannel); realtimeChannel = null; }
       renderLogin();
     }
     // TOKEN_REFRESHED etc.: the session object above is all that needs updating.
