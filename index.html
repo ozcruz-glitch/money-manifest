@@ -450,6 +450,9 @@
   .gate-note{ font-size:11.5px; color:var(--ink-soft); text-align:center; margin-top:18px; line-height:1.5; }
   .gate-divider{ text-align:center; font-size:11px; color:var(--ink-soft); margin:18px 0; position:relative; }
   .gate-error{ background:var(--warn-tint); color:var(--warn); font-size:12.5px; padding:10px 12px; border-radius:4px; margin-bottom:16px; }
+  .gate-google-note{ margin-top:16px; padding:12px 14px; border:1px solid var(--rule-strong); border-radius:5px; background:#fff; }
+  .gate-google-note p{ font-size:12.5px; color:var(--ink); margin:0 0 10px; line-height:1.5; }
+  .gate-google-note p.fine{ font-size:11.5px; color:var(--ink-soft); margin:8px 0 0; }
   .gate-spinner{ text-align:center; color:var(--ink-soft); font-size:13px; padding:30px 0; }
 
   .onboard-choice{
@@ -574,20 +577,47 @@ function renderLogin(errorMsg){
   if(!errorMsg){
     try{ errorMsg = sessionStorage.getItem(SIGNOUT_REASON_KEY) || ''; sessionStorage.removeItem(SIGNOUT_REASON_KEY); }catch(e){}
   }
+  let lastProvider = '';
+  try{ lastProvider = sessionStorage.getItem('mm-last-provider') || ''; sessionStorage.removeItem('mm-last-provider'); }catch(e){}
   gate(`
     <div class="mark">Money Manifest</div>
     <div class="sub">Sign in to open your household's ledger</div>
     ${errorMsg ? `<div class="gate-error">${escapeHtml(errorMsg)}</div>` : ''}
     <button class="oauth-btn apple" id="btnApple">Continue with Apple</button>
     <button class="oauth-btn" id="btnGoogle">Continue with Google</button>
+    ${lastProvider === 'google' ? `
+    <div class="gate-google-note" id="googleSignOutNote">
+      <p>You're signed out of Money Manifest, but this ${isNativeApp() ? 'phone' : 'browser'} is still signed in to Google, so next time Google may let you straight back in. To make it ask for your password, sign out of Google too.</p>
+      <button class="btn small ghost" id="btnGoogleLogout">Also sign out of Google</button>
+      <p class="fine">This signs out of all Google services on this ${isNativeApp() ? 'phone' : 'browser'}, including Gmail.</p>
+    </div>` : ''}
     <div class="gate-note">Your data is private to your household — only people you invite can see it.</div>
   `);
+  const gl = document.getElementById('btnGoogleLogout');
+  if(gl) gl.addEventListener('click', ()=>{
+    const url = 'https://accounts.google.com/Logout';
+    const Browser = isNativeApp() ? nativePlugin('Browser') : null;
+    // In the app, use the same in-app browser that Google sign-in uses, so it's that
+    // browser's Google session that gets cleared.
+    if(Browser) Browser.open({ url, presentationStyle:'popover' }); else window.open(url, '_blank', 'noopener');
+    document.getElementById('googleSignOutNote').innerHTML = `<p>Google's sign-out page has opened. Once it's done, "Continue with Google" will ask you to choose an account and enter your password.</p>`;
+  });
   document.getElementById('btnApple').addEventListener('click', ()=> signIn('apple'));
   document.getElementById('btnGoogle').addEventListener('click', ()=> signIn('google'));
 }
 
 function isNativeApp(){
   return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+}
+
+// Google keeps the browser signed in to Google itself, so after signing out of Money
+// Manifest, "Continue with Google" would otherwise go straight back in. Google doesn't
+// support forcing a password re-entry (it only accepts none / consent / select_account
+// for "prompt"), so the strongest option is to always show its account chooser. For a
+// real password check, the sign-in screen offers "Also sign out of Google" after a
+// Google user signs out.
+function providerQueryParams(provider){
+  return provider === 'google' ? { prompt: 'select_account' } : undefined;
 }
 
 async function signIn(provider){
@@ -601,7 +631,7 @@ async function signIn(provider){
     // returns through the app.moneymanifest:// deep link handled below.
     const { data, error } = await sb.auth.signInWithOAuth({
       provider,
-      options: { redirectTo: getRedirectUrl(), skipBrowserRedirect: true }
+      options: { redirectTo: getRedirectUrl(), skipBrowserRedirect: true, queryParams: providerQueryParams(provider) }
     });
     if(error || !data || !data.url){
       console.error('signInWithOAuth failed', error);
@@ -618,7 +648,7 @@ async function signIn(provider){
   }
   const { error } = await sb.auth.signInWithOAuth({
     provider,
-    options: { redirectTo: getRedirectUrl() }
+    options: { redirectTo: getRedirectUrl(), queryParams: providerQueryParams(provider) }
   });
   if(error){
     console.error('signInWithOAuth failed', error);
@@ -4146,9 +4176,18 @@ async function renderBioSetting(){
   });
 }
 
+function currentProvider(){
+  try{ return (session && session.user && session.user.app_metadata && session.user.app_metadata.provider) || ''; }catch(e){ return ''; }
+}
+function rememberProviderForSignInScreen(provider){
+  try{ if(provider) sessionStorage.setItem('mm-last-provider', provider); }catch(e){}
+}
+
 async function signOutEverywhere(){
+  const provider = currentProvider();
   if(realtimeChannel) sb.removeChannel(realtimeChannel);
   await sb.auth.signOut();
+  rememberProviderForSignInScreen(provider);
   window.location.reload();
 }
 
@@ -4302,12 +4341,14 @@ async function idleSignOut(){
   // Let an edit that's still saving finish first (up to ~3 seconds).
   for(let i=0; i<30 && hasPendingLocalChanges(); i++) await new Promise(r=> setTimeout(r, 100));
   const minutes = idleMinutes();
+  const provider = currentProvider();
   try{ localStorage.removeItem(ACTIVE_KEY); }catch(e){}
   if(realtimeChannel) sb.removeChannel(realtimeChannel);
   try{ await sb.auth.signOut(); }catch(e){}
   // Saved only after sign-out has finished: signing out draws the login screen once,
   // and that would otherwise use up this message just before the reload below.
   try{ sessionStorage.setItem(SIGNOUT_REASON_KEY, `You were signed out after ${minutes} minutes of inactivity.`); }catch(e){}
+  rememberProviderForSignInScreen(provider);
   // Reload so no budget data is left sitting in memory behind the sign-in screen.
   window.location.reload();
 }
